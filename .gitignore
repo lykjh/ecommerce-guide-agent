@@ -1,0 +1,25 @@
+# 虚拟环境
+.venv/
+venv/
+
+# Python 字节码
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 密钥与本地配置（真实地址 / API Key 只放这里，不进仓库）
+.env
+.env.local
+.env.*.local
+
+# 运行时产物
+chat_memory.db
+chroma_db/
+logs/
+data/md5.json
+
+# IDE
+.idea/
+.vscode/
+*.iml
