@@ -1,0 +1,14 @@
+collection_name: "agent"
+persist_directory: "chroma_db"
+k: 3
+data_path: "rag_text"
+md5_hex_store: "data/md5.json"
+allow_knowledge_file_type: ["txt"]
+
+
+embedding_model: "text-embedding-v4"
+
+
+CHUNK_SIZE: 600
+CHUNK_OVERLAP: 40
+SEPARATORS: ["\n\n", "\n", "。", "！", "？", "，", " "]

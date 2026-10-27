@@ -1,0 +1,30 @@
+# 应用全局配置（原 mmm.py 中的常量全部迁移到这里）
+# 约定：所有相对路径都以「项目根目录」为基准展开成绝对路径
+
+path:
+  # SQLite 记忆库文件（LangGraph checkpoint / 聊天记忆）
+  db: "chat_memory.db"
+  # RAG 原始知识文本
+  rag_text: "rag_text/products.txt"
+
+llm:
+  # 兼容 OpenAI 协议的模型服务地址。
+  # ⚠️ 百炼的「专属网关地址」里带租户标识，不能写进配置文件（仓库公开会泄露）。
+  # 只在这里写环境变量名，真实地址放 .env 或系统环境变量。
+  base_url_env: "OPENAI_BASE_URL"
+  # 模型名
+  model: "qwen-plus"
+  # 路由模型名
+  router_model: "qwen-flash"
+  #路由模型温度
+  router_temperature: 0.1
+  # langchain 的 provider 标识
+  model_provider: "openai"
+  # 采样温度：越小越确定
+  temperature: 0.7
+  # 单次最大生成 token 数
+  max_tokens: 1024
+  # API Key 只放环境变量 / .env，不写进配置文件，避免密钥进仓库
+  api_key_env: "OPENAI_API_KEY"
+  # 距离阈值
+  max_distance: 0.8
