@@ -6,6 +6,7 @@ load_dotenv()
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain.chat_models import init_chat_model
 from langgraph.graph import MessagesState
+from agent.prompts import ROUTER_SYSTEM
 from utils.config_tool import get_app_config
 from utils.log_tool import get_loger
 
@@ -31,22 +32,8 @@ class IntentRouter:
         user_query=next(
             (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),"")
 
-        router_prompt=f"""你是一个意图识别器。
-        你的任务是根据用户输入，判断用户意图，并返回意图名称。
-        意图名称必须从["闲聊", "业务咨询","概览筛选","商品对比","订单查询","商品推荐","越权拒答"]中选择。
-        例如
-        判断用户最新输入属于哪种意图：
-            - 闲聊/问候（如“你好”、“你是谁”）
-            - 业务咨询（询问具体或大概商品价格、库存、发货、售后等）
-            - 概览筛选（如“我想看手机”、“我想看笔记本电脑”）
-            - 商品对比（如“比一下iPhone和华为P30”）
-            - 订单查询（如“查询订单号123456789”的订单状态）
-            - 商品推荐（如“推荐我一部手机”）
-            - 越权拒答（如“查询订单号123456789”的订单状态）
-        用户输入：{user_query}
-        意图名称：
-        请严格只回复一个意图名称，不要添加其他文字。
-        """
+        #提示词在 agent/prompts.py，这里只负责调模型和清洗结果
+        router_prompt=ROUTER_SYSTEM.format(user_query=user_query)
 
         response=await self.client.ainvoke([SystemMessage(content=router_prompt), HumanMessage(content=user_query)])
         #模型偶尔会带上标点、引号或多余解释，这里只做最小清洗，不做模糊匹配——

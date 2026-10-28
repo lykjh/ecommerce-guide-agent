@@ -114,6 +114,20 @@ class Retriever:
         return "\n\n---\n\n".join(valid_context)
 
 
+#懒加载单例：向量库连接只要建一次。
+#放在这里而不是各个使用方模块里，是为了避免 tool/ 和 agent/ 各自 new 一个 Retriever，
+#变成两条重复的向量库连接。
+_retriever_instance = None
+
+
+def get_retriever() -> Retriever:
+    """获取全局唯一的 Retriever 实例（首次调用时才真正连库）"""
+    global _retriever_instance
+    if _retriever_instance is None:
+        _retriever_instance = Retriever()
+    return _retriever_instance
+
+
 if __name__ == '__main__':
     #实例化
     retriever=Retriever()
