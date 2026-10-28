@@ -1,6 +1,20 @@
 collection_name: "agent"
 persist_directory: "chroma_db"
 k: 3
+
+# 检索距离阈值，单位统一为「余弦距离」= 1 - 余弦相似度，范围 0~2，越小越像。
+# ⚠️ 量纲说明：Chroma 集合没显式指定 hnsw:space 时默认用 L2（平方欧氏距离），
+# 那个值可以大于 1，和余弦距离不是一回事。retriever 里会自动把原始分数折算成
+# 余弦距离，所以这里按余弦语义填就行，不用管底层是 l2 还是 cosine。
+# 标定依据（实测）：业务咨询场景下 8 个典型问句的最低相关片段余弦距离在 0.30~0.47，
+# 取 0.5 可全部保留；低于 0.5 的确实是答非所问的片段。
+max_distance: 0.5
+
+# 商品对比取详情专用阈值：要比业务咨询更严，不是更松。
+# 放宽会把「库里根本没有的商品」也捞回一堆无关片段，模型拿去对比就是编数据；
+# 宁可查不到直接说没有，也不要召回错的。
+compare_max_distance: 0.45
+
 data_path: "rag_text"
 md5_hex_store: "data/md5.json"
 allow_knowledge_file_type: ["txt"]

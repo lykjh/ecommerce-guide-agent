@@ -4,8 +4,10 @@
 """
 
 import os
-from idlelib import history
-from typing import List, Annotated
+
+from typing import List, Annotated, Optional
+from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
 
@@ -20,6 +22,21 @@ APP_CFG = get_app_config()
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     summary: str
+
+class FilterParams(BaseModel):
+    category: Optional[str] = Field(default=None, description="商品品类，如：手机、衣服、电脑。如果没有提到，填None")
+    min_price: Optional[float] = Field(default=None, description="最低价格。如果没有提到，填None")
+    max_price: Optional[float] = Field(default=None, description="最高价格。如果没有提到，填None")
+    color: Optional[str] = Field(default=None, description="颜色，如：红色、黑色。如果没有提到，填None")
+
+# agent/memory.py 里追加
+from pydantic import BaseModel, Field
+from typing import List
+
+class CompareParams(BaseModel):
+    product_names: List[str] = Field(
+        description="用户想要对比的商品名称列表。如果用户使用了'这个'、'刚才那个'等代词，请务必结合对话历史替换为真实的商品名称。"
+    )
 
 class MemoryManager:
     def __init__(self):
@@ -79,9 +96,16 @@ class MemoryManager:
 
     async def build_chat_messages(self,state:AgentState)->List[BaseMessage]:
         system_msg = SystemMessage(content="你是一个热情、礼貌的电商客服。请简短地回复用户的问候或闲聊，并引导他们咨询商品。")
-
         history=state["messages"][-8:-1]
         return [system_msg] + history+[state["messages"][-1]]
+
+
+    # async def build_compare_shop(self,state:AgentState,user_query:str,context:str)->List[BaseMessage]:
+    #     system_msg=SystemMessage(content="你是一个善于比较的电商客服。请根据用户需要，比较两个商品的异同，并给出建议。")
+    #
+    #     history=state["messages"][-4:-1]
+    #     return [system_msg] + history+[state["messages"][-1]]
+
 
     async def summarize_node(self,state:AgentState):
         messages=state.get("messages", [])

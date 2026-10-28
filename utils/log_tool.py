@@ -74,7 +74,7 @@ CONSOLE_LOGGING_FORMAT=ColorFormatter(
 
 def get_loger(
         name:str="agent",
-        console_level:int=logging.INFO,
+        console_level:int=logging.DEBUG,
         file_level:int=logging.DEBUG,
         log_file=None,
 ) ->logging.Logger:
