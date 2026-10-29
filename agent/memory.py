@@ -15,6 +15,7 @@ load_dotenv()
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, RemoveMessage
 from langchain.chat_models import init_chat_model
 from langgraph.graph.message import add_messages
+from agent.prompts import RECOMMEND_SYSTEM
 from utils.config_tool import get_app_config
 
 APP_CFG = get_app_config()
@@ -22,6 +23,10 @@ APP_CFG = get_app_config()
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     summary: str
+    # 闲聊中累积的购买意向信号，形如 {"signal": "购买意向", "level": 6}
+    # 靠 checkpointer 随 thread_id 跨轮留存；达到 SIGNAL_THRESHOLD 时触发推荐，
+    # 推荐后由 recommend_node 归零，避免用户每说一句闲聊就被推一次。
+    signal_state: dict
 
 class FilterParams(BaseModel):
     category: Optional[str] = Field(default=None, description="商品品类，如：手机、衣服、电脑。如果没有提到，填None")
@@ -94,8 +99,27 @@ class MemoryManager:
 
         return [SystemMessage(content=system_prompt)]+working_memory+[state["messages"][-1]]
 
-    async def build_chat_messages(self,state:AgentState)->List[BaseMessage]:
-        system_msg = SystemMessage(content="你是一个热情、礼貌的电商客服。请简短地回复用户的问候或闲聊，并引导他们咨询商品。")
+    async def build_chat_messages(self, state: AgentState, system_prompt: str)->List[BaseMessage]:
+        """闲聊消息组装。
+
+        system_prompt 由调用方按信号强度选档（纯闲聊 / 探需），
+        话术本身集中在 agent/prompts.py，这里不写死。
+        """
+        system_msg = SystemMessage(content=system_prompt)
+        history=state["messages"][-8:-1]
+        return [system_msg] + history+[state["messages"][-1]]
+
+    async def build_recommend_messages(self, state: AgentState, user_query: str, context: str)->List[BaseMessage]:
+        """推荐用的消息组装。
+
+        必须把检索到的真实商品拼进提示词——不拼就是让模型凭空编商品，
+        推荐场景比问答更容易编得理所当然，用户也更难分辨。
+        """
+        current_summary = state.get("summary", "无")
+        system_msg = SystemMessage(
+            content=RECOMMEND_SYSTEM.format(context=context)
+            + f"\n\n【历史会话摘要】\n{current_summary}"
+        )
         history=state["messages"][-8:-1]
         return [system_msg] + history+[state["messages"][-1]]
 

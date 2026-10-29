@@ -5,8 +5,8 @@ import nest_asyncio
 nest_asyncio.apply()
 from agent.main_agent import get_ai_stream
 
-st.set_page_config(page_title="感情达人",page_icon="💬")
-st.title= "💬 情感达人小暖"
+st.set_page_config(page_title="智能客服",page_icon="💬")
+st.title("💬 智能客服小暖")
 var = st.caption
 "🚀 基于 Qwen 大模型的实时对话"
 
