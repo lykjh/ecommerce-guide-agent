@@ -18,6 +18,10 @@ llm:
   router_model: "qwen-flash"
   #路由模型温度
   router_temperature: 0.1
+  # 信号判断模型（闲聊中追踪购买意向强度）
+  # 判断是分类任务，同样用快模型 + 低温度，保证同一句话两次判断结果一致
+  signal_model: "qwen-flash"
+  signal_temperature: 0.1
   # langchain 的 provider 标识
   model_provider: "openai"
   # 采样温度：越小越确定

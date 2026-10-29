@@ -21,10 +21,10 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from agent.deps import DB_PATH, INTERNAL_TAG
 from agent.memory import AgentState, memory_manager
 from agent.nodes.business import business_node
-from agent.nodes.chat import chat_node
+from agent.nodes.chat import chat_node, recommend_node
 from agent.nodes.compare import compare_shop_node
 from agent.nodes.total import total_node
-from agent.router import router
+from agent.router import SIGNAL_NONE, SIGNAL_THRESHOLD, router
 from utils.log_tool import get_loger
 
 logger = get_loger("agent.main")
@@ -40,10 +40,11 @@ ROUTE_MAP = {
     "业务咨询": "business_node",
     "概览筛选": "total_node",
     "商品对比": "compare_shop_node",
+    "商品推荐": "recommend_node",
 }
 
 #会产出「给用户看的内容」的节点，流式输出只放行这些
-VISIBLE_NODES = ("business_node", "chat_node", "total_node", "compare_shop_node")
+VISIBLE_NODES = ("business_node", "chat_node", "total_node", "compare_shop_node", "recommend_node")
 
 
 async def route_with_fallback(state) -> str:
@@ -64,6 +65,25 @@ async def route_with_fallback(state) -> str:
     return intent
 
 
+def should_recommend(state) -> str:
+    """闲聊之后判断是否该顺势推荐。
+
+    信号强度攒到阈值就转推荐节点，否则照常收尾。
+    ⚠️ 「明确拒绝」要单独挡掉：它的 level 被强制为 0，本来就不会过阈值，
+    这里再判一次是为了防止以后改动强度规则时误触。
+    """
+    signal = state.get("signal_state") or {}
+    level = signal.get("level", 0)
+    name = signal.get("signal", SIGNAL_NONE)
+
+    if level >= SIGNAL_THRESHOLD and name not in (SIGNAL_NONE, "明确拒绝"):
+        logger.info(f"🎯 信号达标 {name}/{level}（阈值 {SIGNAL_THRESHOLD}）-> 触发推荐")
+        return "recommend_node"
+
+    logger.info(f"➡️ 信号未达标 {name}/{level}（阈值 {SIGNAL_THRESHOLD}）-> 直接收尾")
+    return "summarize_node"
+
+
 # ============================================================
 # 二、装配图
 # ============================================================
@@ -74,6 +94,7 @@ builder.add_node("business_node", business_node)
 builder.add_node("chat_node", chat_node)
 builder.add_node("total_node", total_node)
 builder.add_node("compare_shop_node", compare_shop_node)
+builder.add_node("recommend_node", recommend_node)
 #摘要节点由 memory_manager 提供，所有「真实对话」节点都要汇到它，否则这轮不进记忆
 builder.add_node("summarize_node", memory_manager.summarize_node)
 
@@ -85,9 +106,13 @@ builder.add_node("summarize_node", memory_manager.summarize_node)
 builder.add_conditional_edges(START, route_with_fallback, ROUTE_MAP)
 
 builder.add_edge("business_node", "summarize_node")
-builder.add_edge("chat_node", "summarize_node")
 builder.add_edge("total_node", "summarize_node")
 builder.add_edge("compare_shop_node", "summarize_node")
+#闲聊走条件边：信号攒够了先推荐再收尾，没攒够直接收尾
+builder.add_conditional_edges("chat_node", should_recommend)
+#推荐节点自己会把信号归零（见 nodes/chat.py），避免用户每说一句就被推一次
+builder.add_edge("recommend_node", "summarize_node")
+
 builder.add_edge("summarize_node", END)
 
 
