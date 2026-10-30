@@ -42,11 +42,17 @@ async def compare_shop_node(state: AgentState):
     except Exception as e:
         #区分「抽取失败」和「商品查不到」，以前两者返回同一句话，线上根本没法定位
         logger.exception(f"❌ 对比商品名抽取失败 | 问题「{user_query[:30]}」| {e}")
-        return {"messages": [AIMessage(content=COMPARE_NOT_UNDERSTOOD)]}
+        return {
+            "messages": [AIMessage(content=COMPARE_NOT_UNDERSTOOD)],
+            "final_reply": COMPARE_NOT_UNDERSTOOD,
+        }
 
     if len(products_to_compare) < 2:
         logger.warning(f"⚠️ 抽取到的商品不足 2 个 | {products_to_compare}")
-        return {"messages": [AIMessage(content=COMPARE_NEED_TWO)]}
+        return {
+            "messages": [AIMessage(content=COMPARE_NEED_TWO)],
+            "final_reply": COMPARE_NEED_TWO,
+        }
 
     product_data_list = []
     missing = []
@@ -59,7 +65,8 @@ async def compare_shop_node(state: AgentState):
 
     if missing:
         logger.warning(f"⚠️ 部分商品未查到，终止对比 | 缺失 {missing}")
-        return {"messages": [AIMessage(content=compare_missing(missing))]}
+        reply = compare_missing(missing)
+        return {"messages": [AIMessage(content=reply)], "final_reply": reply}
 
     #join 必须在循环外：放在循环里每次都会覆盖，一旦将来加 continue 就会漏数据
     context_str = "\n".join(product_data_list)
@@ -70,4 +77,4 @@ async def compare_shop_node(state: AgentState):
 
     response = await client.ainvoke([system_prompt, compare_request])
     logger.info(f"✅ compare_shop_node 回答完成 | {len(response.content)} 字符")
-    return {"messages": [response]}
+    return {"messages": [response], "final_reply": response.content}

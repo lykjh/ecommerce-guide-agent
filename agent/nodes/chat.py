@@ -150,7 +150,12 @@ async def chat_node(state: AgentState):
         f"✅ chat_node 回答完成 | {len(response.content)} 字符 | "
         f"信号 {name}/{level} | 档位 {'探需' if prompt is CHAT_PROBE_SYSTEM else '闲聊'}"
     )
-    return {"messages": [response], "signal_state": signal_state}
+    #final_reply：显式告诉输出层「这就是要发给用户的内容」，别让它去 messages 里猜
+    return {
+        "messages": [response],
+        "signal_state": signal_state,
+        "final_reply": content,
+    }
 
 
 async def _product_names(text: str) -> list[str]:
@@ -209,6 +214,7 @@ async def recommend_node(state: AgentState):
         return {
             "messages": [AIMessage(content=RECOMMEND_FALLBACK)],
             "signal_state": {"signal": SIGNAL_NONE, "level": 0},
+            "final_reply": RECOMMEND_FALLBACK,
         }
 
     msgs = await memory_manager.build_recommend_messages(state, user_query, context)
@@ -216,20 +222,31 @@ async def recommend_node(state: AgentState):
 
     #evidence 校验：回复里点名的商品，必须能在检索到的商品信息里找到
     content = response.content
-    missing = _evidence_missing(await _product_names(content), context)
-    if missing:
-        logger.warning(f"🚫 推荐里出现库里没有的商品 {missing}，触发重写")
+    names = await _product_names(content)
+    missing = _evidence_missing(names, context)
+    #🔴 光查「有没有编造」不够，还得查「有没有真的推荐」：
+    #实测出过这种回复——通篇抄 context 里的评价文案（"家里人用了都说好，准备再买一个送人"），
+    #一个商品名都没有。evidence 校验抓不到它（没名字可查），但用户看完根本不知道该买什么。
+    #所以加一条硬规则：推荐回复必须点名至少一个库里真实存在的商品。
+    if not names or missing:
+        reason = "一个商品都没点名" if not names else f"出现库里没有的商品 {missing}"
+        logger.warning(f"🚫 推荐不合格（{reason}），触发重写 | 原文: {content[:60]}")
         content = await _rewrite_recommend(msgs, context)
-        missing = _evidence_missing(await _product_names(content), context)
-        if missing:
-            logger.warning(f"🚫 重写后仍有编造 {missing}，改用兜底话术")
+        names = await _product_names(content)
+        missing = _evidence_missing(names, context)
+        if not names or missing:
+            reason = "一个商品都没点名" if not names else f"仍有编造 {missing}"
+            logger.warning(f"🚫 重写后仍不合格（{reason}），改用兜底话术 | 重写版: {content[:60]}")
             content = RECOMMEND_FALLBACK
 
     response.content = content
-    logger.info(f"✅ recommend_node 推荐完成 | {len(response.content)} 字符")
+    logger.info(
+        f"✅ recommend_node 推荐完成 | {len(content)} 字符 | 点名商品 {names or '无'}"
+    )
 
     #🔴 推荐完必须归零：信号还留在阈值以上的话，用户下一句随便聊一句就又被推一次
     return {
         "messages": [response],
         "signal_state": {"signal": SIGNAL_NONE, "level": 0},
+        "final_reply": content,
     }

@@ -16,4 +16,4 @@ async def business_node(state: AgentState):
 
     response = await client.ainvoke(msgs)
     logger.info(f"✅ business_node 回答完成 | {len(response.content)} 字符")
-    return {"messages": [response]}
+    return {"messages": [response], "final_reply": response.content}

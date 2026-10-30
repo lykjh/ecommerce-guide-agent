@@ -27,6 +27,11 @@ class AgentState(TypedDict):
     # 靠 checkpointer 随 thread_id 跨轮留存；达到 SIGNAL_THRESHOLD 时触发推荐，
     # 推荐后由 recommend_node 归零，避免用户每说一句闲聊就被推一次。
     signal_state: dict
+    # 本轮节点产出的「定稿回复」——这是**明确告诉输出层要发给用户的内容**。
+    # 🔴 为什么不能让输出层自己从 messages 里倒着找最后一条 AIMessage：
+    # 那是在「猜」。多轮会话下万一这轮的消息没落进 state，猜到的就是**上一轮**的回复，
+    # 界面上会表现为答非所问，而且不报错。节点显式声明就没有这个歧义。
+    final_reply: str
 
 class FilterParams(BaseModel):
     category: Optional[str] = Field(default=None, description="商品品类，如：手机、衣服、电脑。如果没有提到，填None")

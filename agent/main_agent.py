@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
@@ -24,6 +24,7 @@ from agent.nodes.business import business_node
 from agent.nodes.chat import chat_node, recommend_node
 from agent.nodes.compare import compare_shop_node
 from agent.nodes.total import total_node
+from agent.prompts import OUTPUT_FALLBACK
 from agent.router import SIGNAL_NONE, SIGNAL_THRESHOLD, router
 from utils.log_tool import get_loger, set_session_id
 
@@ -131,46 +132,63 @@ async def get_ai_stream(user_input: str, thread_id: str = "default"):
         graph = builder.compile(checkpointer=checkpointer)
 
         emitted = False
+        #本轮节点交出的定稿内容（chat/recommend 走防幻觉守卫，生成过程不可见，
+        #只能等节点结束后从它的返回值里拿）
+        final_reply = ""
 
-        async for msg_chunk, metadata in graph.astream(
+        #🔴 为什么同时订阅 messages 和 updates 两种模式：
+        #messages 用来把「边生成边输出」的 token 实时流出去（打字机效果）；
+        #updates 用来拿到节点**本轮返回的 state 更新**，里面带着 final_reply。
+        #以前只用 messages，拿不到定稿就只能回头去 state 的 messages 里倒着找最后一条
+        #AIMessage——那是在猜，多轮会话下会把上一轮的回复再吐一遍。
+        async for mode, chunk in graph.astream(
             {"messages": [HumanMessage(content=user_input)]},
             config=config,
-            stream_mode="messages"
+            stream_mode=["messages", "updates"]
         ):
 
-            #1) 先挡掉「内部调用」：参数抽取这类中间过程不能让用户看到。
-            #   stream_mode="messages" 捕获的是节点内每一次 LLM 调用，不是每个节点一次，
-            #   所以只按节点名过滤是不够的，必须按调用粒度挡。
-            if INTERNAL_TAG in (metadata.get("tags") or []):
-                continue
+            if mode == "messages":
+                msg_chunk, metadata = chunk
 
-            #2) 再按节点过滤：路由模型自己输出的意图标签归属 __start__，也要挡掉
-            node_name = metadata.get("langgraph_node")
-            if (
-                msg_chunk.type == "AIMessageChunk"
-                and msg_chunk.content
-                and node_name in VISIBLE_NODES
-            ):
-                emitted = True
-                yield msg_chunk.content
+                #1) 先挡掉「内部调用」：参数抽取这类中间过程不能让用户看到。
+                #   stream_mode="messages" 捕获的是节点内每一次 LLM 调用，不是每个节点一次，
+                #   所以只按节点名过滤是不够的，必须按调用粒度挡。
+                if INTERNAL_TAG in (metadata.get("tags") or []):
+                    continue
 
-        #3) 兜底：节点直接 return AIMessage(...) 的回复不会走流式
-        #   （例如"没找到该商品"的预设回复；现在 chat_node / recommend_node 也是这样——
-        #    它们的生成过程挂了 INTERNAL_TAG，要等防幻觉守卫定稿才能给用户看）。
-        #   这种情况从最终状态里把最后一条 AI 回复取出来吐出去。
+                #2) 再按节点过滤：路由模型自己输出的意图标签归属 __start__，也要挡掉
+                node_name = metadata.get("langgraph_node")
+                if (
+                    msg_chunk.type == "AIMessageChunk"
+                    and msg_chunk.content
+                    and node_name in VISIBLE_NODES
+                ):
+                    emitted = True
+                    yield msg_chunk.content
+
+            #updates 模式下 chunk 形如 {"节点名": 该节点返回的 state 更新}
+            elif mode == "updates":
+                for node_name, update in (chunk or {}).items():
+                    if node_name not in VISIBLE_NODES or not isinstance(update, dict):
+                        continue
+                    if update.get("final_reply"):
+                        final_reply = update["final_reply"]
+
+        #3) 没有流式输出（节点返回的是定稿消息）时，用节点交出的定稿切片吐出
         if not emitted:
-            logger.info("ℹ️ 本轮无流式输出（节点返回的是定稿消息），改为从状态里取最终消息")
-            try:
-                final_state = await graph.aget_state(config)
-                for msg in reversed(final_state.values.get("messages", [])):
-                    #排除 AIMessageChunk：那是流式的碎片，不是完整回复
-                    if isinstance(msg, AIMessage) and not isinstance(msg, AIMessageChunk) and msg.content:
-                        #切片吐出：整段一次性砸出来太生硬，切小块保住打字机效果
-                        for i in range(0, len(msg.content), 12):
-                            yield msg.content[i:i + 12]
-                        break
-            except Exception as e:
-                logger.exception(f"❌ 取最终消息失败: {e}")
+            if final_reply:
+                logger.info(f"ℹ️ 本轮无流式输出，改用节点定稿 | {len(final_reply)} 字符")
+                #切片吐出：整段一次性砸出来太生硬，切小块保住打字机效果
+                for i in range(0, len(final_reply), 12):
+                    yield final_reply[i:i + 12]
+            else:
+                #🔴 绝不静默。以前这里什么都不 yield，界面就是一片空白，
+                #日志里连个 ERROR 都没有，完全没法定位。
+                logger.error(
+                    "❌ 本轮没有任何可输出内容：既没有流式 chunk，"
+                    "节点也没交出 final_reply。已用兜底话术顶上"
+                )
+                yield OUTPUT_FALLBACK
 
 
 if __name__ == "__main__":

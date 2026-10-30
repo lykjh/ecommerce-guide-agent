@@ -57,7 +57,10 @@ async def total_node(state: AgentState):
 
     if not any([params.category, params.max_price, params.min_price, params.color]):
         logger.warning(f"⚠️ 未抽到任何筛选条件，转为反问 | 问题「{user_query[:30]}」")
-        return {"messages": [AIMessage(content=ASK_FILTER_CONDITION)]}
+        return {
+            "messages": [AIMessage(content=ASK_FILTER_CONDITION)],
+            "final_reply": ASK_FILTER_CONDITION,
+        }
 
     #⚠️ 当前数据源是 tool/product.py 的 MOCK_PRODUCTS（仅 4 条示例数据），
     #和向量库里那 2500 条真实商品不是同一份数据。等商品表建成后这里换成真实查询。
@@ -80,7 +83,10 @@ async def total_node(state: AgentState):
 
     if not db_results:
         logger.warning(f"⚠️ 无命中结果 | 条件 {params.model_dump()}")
-        return {"messages": [AIMessage(content=NO_PRODUCT_MATCHED)]}
+        return {
+            "messages": [AIMessage(content=NO_PRODUCT_MATCHED)],
+            "final_reply": NO_PRODUCT_MATCHED,
+        }
 
     context_str = "\n".join(
         [f"- {p['name']} | 价格: {p['price']}元 | 颜色: {p['color']} | 类别: {p['category']}"
@@ -97,4 +103,4 @@ async def total_node(state: AgentState):
     final_msgs = [system_prompt, HumanMessage(content=user_query)]
     response = await client.ainvoke(final_msgs)
     logger.info(f"✅ total_node 回答完成 | {len(response.content)} 字符")
-    return {"messages": [response]}
+    return {"messages": [response], "final_reply": response.content}
