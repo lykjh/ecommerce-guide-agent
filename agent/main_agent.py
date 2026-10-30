@@ -25,7 +25,7 @@ from agent.nodes.chat import chat_node, recommend_node
 from agent.nodes.compare import compare_shop_node
 from agent.nodes.total import total_node
 from agent.router import SIGNAL_NONE, SIGNAL_THRESHOLD, router
-from utils.log_tool import get_loger
+from utils.log_tool import get_loger, set_session_id
 
 logger = get_loger("agent.main")
 
@@ -121,8 +121,11 @@ builder.add_edge("summarize_node", END)
 # ============================================================
 
 async def get_ai_stream(user_input: str, thread_id: str = "default"):
+    #把会话 id 绑到日志上下文：之后 router / 节点 / retriever 打的所有日志都会带上它，
+    #排查某轮对话时直接 grep 这个 id 就能拉出完整链路，不用再拿时间戳去对齐几个文件。
+    set_session_id(thread_id)
     config = {"configurable": {"thread_id": thread_id}}
-    logger.info(f"▶️ 新一轮对话 | thread={thread_id} | 输入「{user_input[:40]}」")
+    logger.info(f"▶️ 新一轮对话 | 输入「{user_input[:40]}」")
 
     async with AsyncSqliteSaver.from_conn_string(DB_PATH) as checkpointer:
         graph = builder.compile(checkpointer=checkpointer)

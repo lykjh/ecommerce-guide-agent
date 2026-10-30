@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+from contextvars import ContextVar
 from datetime import datetime
 from utils.path_tool import get_abs_path
 
@@ -8,8 +9,31 @@ LOG_ROOT = get_abs_path("logs")
 
 os.makedirs(LOG_ROOT,exist_ok=True)
 
+#每轮对话的会话 id，由 main_agent.get_ai_stream 进门时写入。
+#用 ContextVar 而不是全局变量：日志埋点散在 router / 各节点 / retriever 里，
+#靠函数参数一路传下去太脏；而同一个 asyncio Task 内的 await 链会继承同一个上下文，
+#所以只要在入口 set 一次，后面所有节点的日志都自动带上，节点代码一行都不用改。
+_session_id: ContextVar[str] = ContextVar("session_id", default="-")
+
+
+def set_session_id(session_id: str) -> None:
+    """绑定当前会话 id（传空就退回 "-"）。"""
+    _session_id.set(session_id or "-")
+
+
+def get_session_id() -> str:
+    return _session_id.get()
+
+
+class SessionIdFilter(logging.Filter):
+    """把当前会话 id 塞进 record.sid，供格式器使用。"""
+    def filter(self, record):
+        record.sid = _session_id.get()
+        return True
+
+
 #日志正文格式（控制台和文件共用）
-LOG_FMT="%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
+LOG_FMT="%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - [会话:%(sid)s] - %(message)s"
 
 #ANSI 颜色码
 COLOR_RESET="\033[0m"
@@ -91,6 +115,8 @@ def get_loger(
     console_handler.setLevel(console_level)
     #控制台用带颜色的格式器
     console_handler.setFormatter(CONSOLE_LOGGING_FORMAT)
+    #每条日志都补上当前会话 id
+    console_handler.addFilter(SessionIdFilter())
     console_handler._from_log_tool = True
     logger.addHandler(console_handler)
 
@@ -110,6 +136,7 @@ def get_loger(
     file_handler= logging.FileHandler(log_file,encoding="utf-8")
     file_handler.setLevel(file_level)
     file_handler.setFormatter(DEFAULT_LOGGING_FORMAT)
+    file_handler.addFilter(SessionIdFilter())
     file_handler._from_log_tool = True
     logger.addHandler(file_handler)
 

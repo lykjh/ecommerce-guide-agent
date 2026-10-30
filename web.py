@@ -1,3 +1,5 @@
+import uuid
+
 import streamlit as st
 
 from agent.main_agent import get_ai_stream
@@ -11,6 +13,19 @@ st.set_page_config(page_title="智能客服",page_icon="💬")
 st.title("💬 智能客服小暖")
 st.caption("🚀 基于 Qwen 大模型的实时对话")
 
+
+#会话 id：既是这轮对话的身份，也是 checkpointer 的 thread_id（记忆按它隔离）。
+#放在 session_state 里正好满足「刷新即新会话」——浏览器一刷新 session_state 清空，
+#新 id 自动生成，上一轮的记忆不会再串到这一轮。
+if "session_id" not in st.session_state:
+    st.session_state.session_id=uuid.uuid4().hex[:8]
+
+with st.sidebar:
+    st.caption(f"当前会话 ID：{st.session_state.session_id}")
+    if st.button("🔄 开个新会话"):
+        st.session_state.session_id=uuid.uuid4().hex[:8]
+        st.session_state.message=[]
+        st.rerun()
 
 #初始化聊天记录
 if "message" not in st.session_state:
@@ -32,7 +47,7 @@ if prompt :=st.chat_input("说点什么吧..."):
 
         #iter_async 把 get_ai_stream 这个 async generator 搬到后台线程的事件循环里跑，
         #chunk 通过队列回到主线程，所以这里仍然是「边生成边刷新」的流式效果。
-        for chunk in iter_async(get_ai_stream, prompt):
+        for chunk in iter_async(get_ai_stream, prompt, thread_id=st.session_state.session_id):
             full_response+=chunk
             #光标移动
             response_placeholder.markdown(full_response+"|")
