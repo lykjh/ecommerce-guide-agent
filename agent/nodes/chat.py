@@ -9,6 +9,8 @@
 明确意图根本不需要判信号，做成 START 分支等于每轮都多调一次模型。
 """
 
+import re
+
 from langchain_core.messages import AIMessage
 
 from agent.deps import client, retriever
@@ -18,6 +20,44 @@ from agent.router import SIGNAL_NONE, SIGNAL_PROBE_THRESHOLD, SIGNAL_THRESHOLD, 
 from utils.log_tool import get_loger
 
 logger = get_loger("agent.nodes.chat")
+
+
+#清单行的行首标记：• · ▪ - * 1. 1) ① 之类
+_LIST_LINE_RE = re.compile(r"\s*(?:[•·▪▫◦]|[-*+]|[0-9]+[.、)）]|[①-⑩])\s*\S")
+#清单前面那句"引子"，典型说法："顺便悄悄说：我们库里刚好有几款…"
+_LEAD_IN_WORDS = ("库里", "仓库", "刚好", "几款", "推荐", "悄悄说", "顺便", "看看哪款", "这些商品", "热销")
+
+
+def _strip_fabricated_block(text: str) -> str:
+    """砍掉闲聊回复里凭空冒出来的商品清单。
+
+    🔴 为什么需要这道保险：chat_node **不检索任何商品**，回复里一旦出现列表，
+    几乎可以断定是模型自己脑补的（实测"今天好热啊"被编出三款降温神器，
+    还配了"正在被抢购🔥"）。真要推荐必须走 recommend_node——那条链路才带检索上下文。
+
+    做法：从第一个清单行开始整段砍掉，连它上面那句引子一起砍（引子往往才是
+    编造的起点："我们库里刚好有几款…"）。只砍清单块，前面的正常寒暄保留。
+    """
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if not _LIST_LINE_RE.match(line):
+            continue
+
+        head = lines[:i]
+        #砍掉紧邻的引子行（往上找最近一个非空行，命中引导词就一并丢掉）
+        for j in range(len(head) - 1, -1, -1):
+            if head[j].strip():
+                if any(w in head[j] for w in _LEAD_IN_WORDS):
+                    head = head[:j]
+                break
+
+        kept = "\n".join(head).rstrip()
+        logger.warning(
+            f"🚫 闲聊回复里出现疑似编造的商品清单，已截断 | "
+            f"{len(text)} 字符 -> {len(kept)} 字符 | 砍掉: {line.strip()[:30]}"
+        )
+        return kept
+    return text
 
 
 async def chat_node(state: AgentState):
@@ -40,6 +80,12 @@ async def chat_node(state: AgentState):
 
     msgs = await memory_manager.build_chat_messages(state, prompt)
     response = await client.ainvoke(msgs)
+
+    #二道保险：提示词管不住的模型，在这里把编造的清单砍掉（详见函数注释）
+    stripped = _strip_fabricated_block(response.content)
+    if not stripped.strip():
+        stripped = "您想看点什么呢？告诉我大概的品类和预算，我帮您挑。"
+    response.content = stripped
 
     logger.info(
         f"✅ chat_node 回答完成 | {len(response.content)} 字符 | "
