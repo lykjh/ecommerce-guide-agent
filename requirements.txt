@@ -40,8 +40,10 @@ langchain-chroma==1.1.0
 
 # ---------- Web 界面 ----------
 streamlit==1.66.1
-# Streamlit 里套 asyncio.run 需要打这个补丁。
-# ⚠️ 装 nest-asyncio，不要装 anest-asyncio：
-# 后者是 ib-api-reloaded 的非官方 fork（github.com/ib-api-reloaded/nest_asyncio），
-# 官方版是 erdewit 维护的（github.com/erdewit/nest_asyncio）。
-nest-asyncio==1.6.0
+# ❌ 不再需要 nest-asyncio，已从项目里移除，千万别装：
+# 它为了让事件循环可重入，会在执行 handle 前把当前 task 从 asyncio 的
+# _current_tasks 里摘掉；而 Python 3.12+ 的 asyncio.wait_for / asyncio.timeout
+# 要求代码运行在 Task 内，两者冲突会抛
+#     RuntimeError: Timeout should be used inside a task
+# langgraph 内部就用了 asyncio.wait_for，Python 3.14 下必崩。
+# 现在的做法是 utils/async_bridge.py：后台线程常驻事件循环 + queue 桥接。
