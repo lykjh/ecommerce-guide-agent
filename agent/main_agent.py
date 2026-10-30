@@ -154,17 +154,20 @@ async def get_ai_stream(user_input: str, thread_id: str = "default"):
                 emitted = True
                 yield msg_chunk.content
 
-        #3) 兜底：节点直接 return AIMessage(...) 的「写死回复」（例如"没找到该商品"）
-        #   不经过 LLM，stream_mode="messages" 不会产出任何 chunk，用户会看到一片空白。
-        #   这种情况从最终状态里把最后一条 AI 回复取出来一次性吐出去。
+        #3) 兜底：节点直接 return AIMessage(...) 的回复不会走流式
+        #   （例如"没找到该商品"的预设回复；现在 chat_node / recommend_node 也是这样——
+        #    它们的生成过程挂了 INTERNAL_TAG，要等防幻觉守卫定稿才能给用户看）。
+        #   这种情况从最终状态里把最后一条 AI 回复取出来吐出去。
         if not emitted:
-            logger.warning("⚠️ 本轮无流式输出（节点返回的是预设回复），改为从状态里取最终消息")
+            logger.info("ℹ️ 本轮无流式输出（节点返回的是定稿消息），改为从状态里取最终消息")
             try:
                 final_state = await graph.aget_state(config)
                 for msg in reversed(final_state.values.get("messages", [])):
                     #排除 AIMessageChunk：那是流式的碎片，不是完整回复
                     if isinstance(msg, AIMessage) and not isinstance(msg, AIMessageChunk) and msg.content:
-                        yield msg.content
+                        #切片吐出：整段一次性砸出来太生硬，切小块保住打字机效果
+                        for i in range(0, len(msg.content), 12):
+                            yield msg.content[i:i + 12]
                         break
             except Exception as e:
                 logger.exception(f"❌ 取最终消息失败: {e}")
