@@ -11,7 +11,7 @@ async def business_node(state: AgentState):
     user_query = state["messages"][-1].content
     context = retriever.get_context(user_query)
 
-    msgs = await memory_manager.build_bussiness_messages(state, user_query, context)
+    msgs = await memory_manager.build_business_messages(state, context)
     logger.info(f"💬 business_node | 问题「{user_query[:30]}」| 上下文 {len(context)} 字符")
 
     response = await client.ainvoke(msgs)

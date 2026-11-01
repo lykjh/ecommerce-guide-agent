@@ -122,6 +122,12 @@ builder.add_edge("summarize_node", END)
 # ============================================================
 
 async def get_ai_stream(user_input: str, thread_id: str = "default"):
+    if not isinstance(user_input, str) or not user_input.strip():
+        raise ValueError("请输入非空文本")
+    if len(user_input) > memory_manager.MAX_HISTORY_CHARS:
+        raise ValueError("输入过长，请缩短到 6000 字符以内")
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise ValueError("会话 ID 不能为空")
     #把会话 id 绑到日志上下文：之后 router / 节点 / retriever 打的所有日志都会带上它，
     #排查某轮对话时直接 grep 这个 id 就能拉出完整链路，不用再拿时间戳去对齐几个文件。
     set_session_id(thread_id)

@@ -8,6 +8,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain.chat_models import init_chat_model
 from langgraph.graph import MessagesState
 from agent.deps import INTERNAL_TAG
+from agent.memory import memory_manager
 from agent.prompts import ROUTER_SYSTEM, SIGNAL_JUDGE_SYSTEM
 from utils.config_tool import get_app_config
 from utils.log_tool import get_loger
@@ -53,7 +54,7 @@ class IntentRouter:
         #提示词在 agent/prompts.py，这里只负责调模型和清洗结果
         router_prompt=ROUTER_SYSTEM.format(user_query=user_query)
 
-        response=await self.client.ainvoke([SystemMessage(content=router_prompt), HumanMessage(content=user_query)])
+        response = await self.client.ainvoke(memory_manager.build_messages(state, router_prompt))
         #模型偶尔会带上标点、引号或多余解释，这里只做最小清洗，不做模糊匹配——
         #匹配不上就如实记日志走兜底，别猜。
         intent = response.content.strip().strip("。.！!，,＂\"'")
@@ -110,10 +111,7 @@ class SignalRouter:
 
         raw = ""
         try:
-            response = await self.client.ainvoke([
-                SystemMessage(content=router_prompt),
-                HumanMessage(content=user_query)
-            ])
+            response = await self.client.ainvoke(memory_manager.build_messages(state, router_prompt))
             raw = response.content.strip()
 
             name, level_str = raw.split("|")

@@ -8,7 +8,7 @@
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent.deps import client, extract_client, INTERNAL_TAG
-from agent.memory import AgentState, CompareParams
+from agent.memory import AgentState, CompareParams, memory_manager
 from agent.prompts import (
     COMPARE_ANSWER_SYSTEM,
     COMPARE_EXTRACT_SYSTEM,
@@ -34,7 +34,7 @@ async def compare_shop_node(state: AgentState):
     )
 
     try:
-        extract_params = [SystemMessage(content=COMPARE_EXTRACT_SYSTEM)] + state["messages"]
+        extract_params = memory_manager.build_messages(state, COMPARE_EXTRACT_SYSTEM)
 
         params = await structured_llm.ainvoke(extract_params)
         products_to_compare = params.product_names

@@ -1,0 +1,73 @@
+{
+  "run_at_utc": "2026-11-01T07:03:54.854622+00:00",
+  "summary_model": "qwen-flash",
+  "answer_model": "qwen-plus",
+  "cases": [
+    {
+      "name": "preferences",
+      "seconds": 1.71,
+      "summary": "用户计划购买黑色耳机，预算300元，主要用于地铁通勤，需具备降噪功能。暂无其他明确偏好或已排除型号。",
+      "checks": {
+        "archived_old_messages": true,
+        "summary_bounded": true,
+        "required_facts": true,
+        "excluded_data": true
+      },
+      "passed": true
+    },
+    {
+      "name": "correction",
+      "seconds": 0.36,
+      "summary": "用户预算调整为500元，偏好白色耳机。暂不接受主动推荐，仅作咨询。",
+      "checks": {
+        "archived_old_messages": true,
+        "summary_bounded": true,
+        "required_facts": true,
+        "excluded_data": true,
+        "no_active_old_preferences": true,
+        "no_recommendation_preference": true
+      },
+      "passed": true
+    },
+    {
+      "name": "untrusted_history",
+      "seconds": 0.43,
+      "summary": "暂无明确购物偏好。用户关注耳机，但未指定具体型号或需求。未提供预算、用途或其他偏好信息。无已完成事项。",
+      "checks": {
+        "archived_old_messages": true,
+        "summary_bounded": true,
+        "required_facts": true,
+        "excluded_data": true
+      },
+      "passed": true
+    },
+    {
+      "name": "sqlite_reopen",
+      "checks": {
+        "restored_summary": true,
+        "restored_message_ids": true,
+        "new_session_empty": true
+      },
+      "passed": true
+    },
+    {
+      "name": "answer_after_reopen",
+      "answer": "根据您之前提供的信息：\n\n- **预算**：300元  \n- **颜色偏好**：黑色  \n- **主要用途**：地铁通勤（即需应对车厢内人声、广播、轨道噪音等中低频环境噪声）  \n- **核心需求**：具备**降噪功能**（未特别说明是主动降噪ANC还是被动降噪，但结合通勤场景与预算，通常指基础主动降噪）  \n- 其他：暂无明确品牌倾向、佩戴方式（入耳/半入耳/头戴）或已排除型号  \n\n如后续需要，我可以基于这些条件帮您梳理当前符合要求的选项（例如：300元内支持主动降噪、黑色款、适合通勤的耳机），并说明各自的适用性与注意事项。是否需要？",
+      "checks": {
+        "recalls_summary": true,
+        "recalls_use": true
+      },
+      "passed": true,
+      "usage": {
+        "input_tokens": 172,
+        "output_tokens": 174,
+        "total_tokens": 346,
+        "input_token_details": {
+          "cache_read": 0
+        },
+        "output_token_details": {}
+      }
+    }
+  ],
+  "passed": true
+}

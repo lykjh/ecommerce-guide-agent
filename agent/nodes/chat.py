@@ -204,7 +204,7 @@ async def _rewrite_recommend(msgs, context: str) -> str:
 
 
 async def recommend_node(state: AgentState):
-    user_query = state["messages"][-1].content
+    user_query = next(m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
 
     #推荐必须基于真实商品，否则就是让模型凭空编——比答不上来更糟
     context = retriever.get_context(user_query)
@@ -217,7 +217,7 @@ async def recommend_node(state: AgentState):
             "final_reply": RECOMMEND_FALLBACK,
         }
 
-    msgs = await memory_manager.build_recommend_messages(state, user_query, context)
+    msgs = await memory_manager.build_recommend_messages(state, context)
     response = await chat_client.ainvoke(msgs)
 
     #evidence 校验：回复里点名的商品，必须能在检索到的商品信息里找到

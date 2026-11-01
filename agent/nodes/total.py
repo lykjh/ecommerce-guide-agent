@@ -9,22 +9,17 @@
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent.deps import client, extract_client, INTERNAL_TAG
-from agent.memory import AgentState, FilterParams
+from agent.memory import AgentState, FilterParams, memory_manager
 from agent.prompts import (
     ASK_FILTER_CONDITION,
     NO_PRODUCT_MATCHED,
     TOTAL_ANSWER_SYSTEM,
     TOTAL_EXTRACT_SYSTEM,
-    TOTAL_EXTRACT_USER,
 )
 from tool.product import count_products, search_products_mock
 from utils.log_tool import get_loger
 
 logger = get_loger("agent.nodes.total")
-
-#最多回看几轮历史来补全省略
-HISTORY_TURNS = 6
-
 
 async def total_node(state: AgentState):
     user_query = state["messages"][-1].content
@@ -38,15 +33,7 @@ async def total_node(state: AgentState):
     )
 
     try:
-        #带上摘要和最近几轮历史，让追问（"便宜点的呢"/"有没有红色的"）也能抽到参数
-        summary = state.get("summary", "")
-        history = state["messages"][:-1][-HISTORY_TURNS:]
-
-        extract_msgs = [SystemMessage(content=TOTAL_EXTRACT_SYSTEM)]
-        if summary:
-            extract_msgs.append(SystemMessage(content=f"【历史会话摘要】\n{summary}"))
-        extract_msgs += list(history)
-        extract_msgs.append(HumanMessage(content=TOTAL_EXTRACT_USER.format(user_query=user_query)))
+        extract_msgs = memory_manager.build_messages(state, TOTAL_EXTRACT_SYSTEM)
 
         params = await structured_llm.ainvoke(extract_msgs)
         logger.info(f"✅ 筛选参数抽取完成 | {params.model_dump()}")
