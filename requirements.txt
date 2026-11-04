@@ -38,12 +38,6 @@ langgraph-prebuilt==1.1.1
 # langchain-chroma 会带上 chromadb，无需单独列
 langchain-chroma==1.1.0
 
-# ---------- Web 界面 ----------
-streamlit==1.66.1
-# ❌ 不再需要 nest-asyncio，已从项目里移除，千万别装：
-# 它为了让事件循环可重入，会在执行 handle 前把当前 task 从 asyncio 的
-# _current_tasks 里摘掉；而 Python 3.12+ 的 asyncio.wait_for / asyncio.timeout
-# 要求代码运行在 Task 内，两者冲突会抛
-#     RuntimeError: Timeout should be used inside a task
-# langgraph 内部就用了 asyncio.wait_for，Python 3.14 下必崩。
-# 现在的做法是 utils/async_bridge.py：后台线程常驻事件循环 + queue 桥接。
+# ---------- 独立 HTTP 服务 ----------
+fastapi==0.162.0
+uvicorn==0.54.0

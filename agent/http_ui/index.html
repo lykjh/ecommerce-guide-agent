@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f3ef">
+  <title>小暖 · 你的购物助手</title>
+  <link rel="stylesheet" href="/ui/style.css">
+  <script type="module" src="/ui/chat.js"></script>
+</head>
+<body class="preview-page">
+  <main class="preview">
+    <div class="preview-brand"><span aria-hidden="true">✳</span> 小暖 <span class="preview-divider"></span><span class="preview-tag">客服窗口预览</span></div>
+    <div class="preview-copy"><p class="preview-kicker">A LITTLE HELP, A BETTER FIND.</p><h1>慢慢挑，<br>我一直在。</h1><p class="preview-description">从一个小问题，到一件心仪好物。<br>需要帮助时，右下角的小暖随时陪你聊聊。</p><span class="preview-line"></span><p class="preview-footnote">收起窗口，继续浏览；展开窗口，接着聊。</p></div>
+    <div class="preview-orbit" aria-hidden="true"><span>✳</span></div>
+  </main>
+
+  <div class="chat-widget">
+    <section id="chat-panel" class="chat-panel" role="region" aria-label="小暖客服窗口">
+      <header class="chat-header">
+        <div class="assistant-brand">
+          <span class="avatar" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M7 8.5h18v12H15l-6 4v-4H7v-12Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 13v2m8-2v2m-7 3c1.5 1.2 4.5 1.2 6 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+          <div><h2>小暖 <span class="ai-tag">AI 助手</span></h2><p>陪你发现合适的好物</p></div>
+        </div>
+        <div class="header-actions">
+          <button id="new-session" class="icon-button" type="button" aria-label="新会话" title="新会话"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5H5v14h14v-7M15 3h6m-3-3v6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 2)"/></svg></button>
+          <button id="minimize" class="icon-button" type="button" aria-label="收起客服窗口" title="收起窗口"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 12h12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
+        </div>
+      </header>
+
+      <div id="chat-scroll" class="chat-scroll">
+        <div id="welcome" class="welcome">
+          <div class="welcome-heading"><span class="welcome-spark" aria-hidden="true">✳</span><span class="welcome-eyebrow">很高兴遇见你</span></div>
+          <h3>嗨，我是小暖。<br><span>今天想找点什么？</span></h3>
+          <p class="welcome-description">告诉我你的预算和偏好，<br>一起挑到更适合你的那一款。</p>
+          <div class="suggestions" aria-label="快捷提问">
+            <button type="button" data-prompt="推荐500元以内的耳机，颜色不限"><span class="suggestion-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m12 3 2.4 5.6L20 11l-5.6 2.4L12 19l-2.4-5.6L4 11l5.6-2.4L12 3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></span><span><strong>帮我挑一挑</strong><small>从预算和需求开始</small></span><span class="suggestion-arrow" aria-hidden="true">↗</span></button>
+            <button type="button" data-prompt="我想了解一款商品的详细信息"><span class="suggestion-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="10.5" cy="10.5" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="m15 15 4 4M8.5 10.5h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span><span><strong>了解商品详情</strong><small>看一看规格与特点</small></span><span class="suggestion-arrow" aria-hidden="true">↗</span></button>
+            <button type="button" data-prompt="我想比较两款商品"><span class="suggestion-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 6h14m-3-3 3 3-3 3M19 18H5m3-3-3 3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span><strong>纠结选哪款？</strong><small>一起比较它们的不同</small></span><span class="suggestion-arrow" aria-hidden="true">↗</span></button>
+          </div>
+        </div>
+        <div id="messages" role="log" aria-label="聊天记录" aria-live="off"></div>
+      </div>
+
+      <div class="composer-wrap">
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="message">你的问题</label>
+          <textarea id="message" name="message" rows="2" maxlength="6000" required placeholder="有什么想问小暖的？"></textarea>
+          <div class="composer-bottom"><span class="input-hint">Enter 发送 · Shift + Enter 换行</span><div class="send-actions"><button id="stop" type="button" disabled>停止生成</button><button id="send" type="submit" aria-label="发送消息" title="发送消息"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 18V6m-5 5 5-5 5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
+        </form>
+        <p id="status" class="chat-status" role="status" aria-live="polite">小暖 AI · 让挑选简单一点</p>
+      </div>
+    </section>
+
+    <div class="launcher-wrap">
+      <span id="launcher-notice" class="launcher-notice" role="status" hidden></span>
+      <button id="launcher" class="launcher" type="button" aria-controls="chat-panel" aria-expanded="true" aria-label="收起客服窗口"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h16v11H11l-5 4v-4H4V5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 10h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span id="launcher-label">小暖客服</span><span class="launcher-dot" aria-hidden="true"></span></button>
+    </div>
+  </div>
+</body>
+</html>

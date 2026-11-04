@@ -1,0 +1,81 @@
+{
+  "scope": "real models + fixed HTTP-boundary fixtures; full dialogue sequences; not production prevalence estimate",
+  "plan_sha256": "c3bb4e0fc724fde7a6ee63f43f7618b6aed13e17c152a37613743f4e6926a1d3",
+  "cases": [
+    [
+      "navigation",
+      "browse",
+      [
+        "推荐耳机",
+        "查看第一个子分类",
+        "第一个"
+      ],
+      [
+        {
+          "pending": true
+        },
+        {
+          "pending": true,
+          "path": 2
+        },
+        {
+          "selected": 11,
+          "matches": true
+        }
+      ]
+    ],
+    [
+      "navigation",
+      "topic",
+      [
+        "推荐耳机",
+        "你好，先不买了，聊点别的"
+      ],
+      [
+        {
+          "pending": true
+        },
+        {
+          "not_pending": true,
+          "no_query": true
+        }
+      ]
+    ],
+    [
+      "failures",
+      "category_404",
+      [
+        "推荐电子商品"
+      ],
+      [
+        {
+          "no_matches": true,
+          "failure": true
+        }
+      ]
+    ],
+    [
+      "overview",
+      "cancel",
+      [
+        "查300元以内的电子商品",
+        "第一个",
+        "取消价格限制，重新统计"
+      ],
+      [
+        {
+          "max_price": "300"
+        },
+        {
+          "selected": 1
+        },
+        {
+          "max_price": null,
+          "selected": 1,
+          "contains": "不代表全商城总数"
+        }
+      ]
+    ]
+  ],
+  "rounds": []
+}

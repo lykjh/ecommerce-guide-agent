@@ -1,4 +1,4 @@
-"""闲聊节点 + 推荐节点。
+"""闲聊节点。
 
 闲聊是整张图里**唯一累积购买意向信号**的链路：
 每轮闲聊先判信号强度、再按档位生成回复；信号攒到 SIGNAL_THRESHOLD 后，
@@ -19,30 +19,24 @@
 
 import re
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.deps import INTERNAL_TAG, client, extract_client, retriever
-from agent.memory import AgentState, memory_manager
+from agent.deps import INTERNAL_TAG, get_client, get_extract_client
+from agent.budget import invoke_model
+from agent.memory import memory_manager
+from agent.state import AgentState
 from agent.prompts import (
     CHAT_GUARD_SYSTEM,
     CHAT_PROBE_SYSTEM,
     CHAT_REPAIR_SYSTEM,
     CHAT_SAFE_FALLBACK,
     CHAT_SYSTEM,
-    RECOMMEND_EXTRACT_SYSTEM,
-    RECOMMEND_FALLBACK,
-    RECOMMEND_REPAIR_SYSTEM,
 )
 from agent.router import SIGNAL_NONE, SIGNAL_PROBE_THRESHOLD, SIGNAL_THRESHOLD, signal_router
-from utils.log_tool import get_loger
+from agent.utils.log_tool import get_loger
+
 
 logger = get_loger("agent.nodes.chat")
-
-#生成与复核都走「内部调用」：不打 tag 会被 stream_mode="messages" 当成回答流给用户
-chat_client = client.with_config({"tags": [INTERNAL_TAG]})
-#复核用便宜的快模型（就是判信号那个），只让它答「有/无」，延迟几乎无感
-guard_client = extract_client.with_config({"tags": [INTERNAL_TAG]})
-
 
 #清单行的行首标记：• · ▪ - * 1. 1) ① 之类
 _LIST_LINE_RE = re.compile(r"\s*(?:[•·▪▫◦]|[-*+]|[0-9]+[.、)）]|[①-⑩])\s*\S")
@@ -76,7 +70,7 @@ def _strip_fabricated_block(text: str) -> str:
         kept = "\n".join(head).rstrip()
         logger.warning(
             f"🚫 闲聊回复里出现疑似编造的商品清单，已截断 | "
-            f"{len(text)} 字符 -> {len(kept)} 字符 | 砍掉: {line.strip()[:30]}"
+            f"{len(text)} 字符 -> {len(kept)} 字符"
         )
         return kept
     return text
@@ -88,24 +82,24 @@ async def _mentions_product(text: str) -> bool:
     闲聊档的规则很简单粗暴——**任何商品都不许出现**，所以不用去商品库比对，
     只要判断「有没有提商品」就行。这也是为什么敢用便宜模型：任务很轻。
     """
-    resp = await guard_client.ainvoke([
+    resp = await invoke_model(get_extract_client().with_config({"tags": [INTERNAL_TAG]}), [
         SystemMessage(content=CHAT_GUARD_SYSTEM),
         HumanMessage(content=text),
     ])
     answer = (resp.content or "").strip()
     if not answer.startswith(("有", "无")):
-        #模型答非所问就按「无」处理，不能因为守卫自己抽风就把正常回复干掉
-        logger.warning(f"⚠️ 守卫模型返回了意外结果「{answer[:20]}」，按「无」处理")
-        return False
+        #解析失败不能冒充合法的「无商品」判断
+        logger.warning("守卫模型返回意外结果")
+        raise ValueError("守卫模型输出格式不合法")
     return answer.startswith("有")
 
 
 async def _rewrite_without_product(msgs) -> str:
     """上一版编了商品，重写一版只寒暄提问的（保留历史与用户输入）。"""
-    resp = await chat_client.ainvoke([
+    resp = await invoke_model(get_client().with_config({"tags": [INTERNAL_TAG]}), [
         SystemMessage(content=CHAT_REPAIR_SYSTEM),
         *msgs[1:],
-    ])
+    ], purpose="repair")
     return (resp.content or "").strip()
 
 
@@ -127,8 +121,8 @@ async def chat_node(state: AgentState):
         #避免这里问一遍需求、推荐节点又推一遍
         prompt = CHAT_SYSTEM
 
-    msgs = await memory_manager.build_chat_messages(state, prompt)
-    response = await chat_client.ainvoke(msgs)
+    msgs = memory_manager.build_messages(state, prompt)
+    response = await invoke_model(get_client().with_config({"tags": [INTERNAL_TAG]}), msgs, purpose="answer")
 
     #防幻觉两道闸：
     #1) 零成本的规则预检——列表型编造（• 冰感凉枕…）直接砍掉，省掉一次模型调用
@@ -136,10 +130,10 @@ async def chat_node(state: AgentState):
     content = _strip_fabricated_block(response.content)
 
     if content.strip() and await _mentions_product(content):
-        logger.warning(f"🚫 闲聊回复疑似编造商品，触发重写 | 原文: {content[:60]}")
+        logger.warning("闲聊回复疑似编造商品，触发重写")
         content = await _rewrite_without_product(msgs)
         if await _mentions_product(content):
-            logger.warning(f"🚫 重写后仍在提商品，改用安全兜底 | 重写版: {content[:60]}")
+            logger.warning("重写后仍在提商品，改用安全兜底")
             content = CHAT_SAFE_FALLBACK
 
     if not content.strip():
@@ -154,99 +148,5 @@ async def chat_node(state: AgentState):
     return {
         "messages": [response],
         "signal_state": signal_state,
-        "final_reply": content,
-    }
-
-
-async def _product_names(text: str) -> list[str]:
-    """从推荐回复里抽出它提到的商品名，用于和 context 做证据比对。"""
-    resp = await guard_client.ainvoke([
-        SystemMessage(content=RECOMMEND_EXTRACT_SYSTEM),
-        HumanMessage(content=text),
-    ])
-    raw = (resp.content or "").strip()
-    if not raw or raw.startswith("无"):
-        return []
-    return [n.strip() for n in re.split(r"[,，、;；\n]", raw) if n.strip()]
-
-
-def _evidence_missing(names: list[str], context: str) -> list[str]:
-    """evidence 校验：回复里提到的商品名，必须在检索到的 context 里找得到。
-
-    比让模型自检更硬——这是能举证的：查不到的名字就是凭空冒出来的。
-
-    ⚠️ 不能直接整串比对：抽取出来的常是「品牌 + 品名」（初汀 Toproto 主动降噪蓝牙耳机），
-    而 context 里品牌和品名是分开写的，整串匹配会**误判真商品为编造**（实测踩到过）。
-    所以按片段拆开，只要任一片段（≥3 字）能在 context 里找到就算有证据。
-    """
-    missing = []
-    for name in names:
-        if name in context:
-            continue
-        #整串找不到就退一步：品牌+品名连写（"初汀主动降噪耳机"）或模型简写商品名时，
-        #context 里往往只有其中的一段。用 4 字滑动窗口，只要有一段能对上就算有出处；
-        #真编造的名字（"月光限定桂花乌龙茶"）一段都对不上。
-        size = 4
-        if len(name) <= size or not any(
-            name[i:i + size] in context for i in range(len(name) - size + 1)
-        ):
-            missing.append(name)
-    return missing
-
-
-async def _rewrite_recommend(msgs, context: str) -> str:
-    """上一版推荐里混进了库里没有的商品，按 context 重写。"""
-    resp = await chat_client.ainvoke([
-        SystemMessage(content=RECOMMEND_REPAIR_SYSTEM.format(context=context)),
-        *msgs[1:],
-    ])
-    return (resp.content or "").strip()
-
-
-async def recommend_node(state: AgentState):
-    user_query = next(m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
-
-    #推荐必须基于真实商品，否则就是让模型凭空编——比答不上来更糟
-    context = retriever.get_context(user_query)
-
-    if not context:
-        logger.warning("⚠️ 推荐时没检索到商品上下文，改为反问用户具体需求，不硬编商品")
-        return {
-            "messages": [AIMessage(content=RECOMMEND_FALLBACK)],
-            "signal_state": {"signal": SIGNAL_NONE, "level": 0},
-            "final_reply": RECOMMEND_FALLBACK,
-        }
-
-    msgs = await memory_manager.build_recommend_messages(state, context)
-    response = await chat_client.ainvoke(msgs)
-
-    #evidence 校验：回复里点名的商品，必须能在检索到的商品信息里找到
-    content = response.content
-    names = await _product_names(content)
-    missing = _evidence_missing(names, context)
-    #🔴 光查「有没有编造」不够，还得查「有没有真的推荐」：
-    #实测出过这种回复——通篇抄 context 里的评价文案（"家里人用了都说好，准备再买一个送人"），
-    #一个商品名都没有。evidence 校验抓不到它（没名字可查），但用户看完根本不知道该买什么。
-    #所以加一条硬规则：推荐回复必须点名至少一个库里真实存在的商品。
-    if not names or missing:
-        reason = "一个商品都没点名" if not names else f"出现库里没有的商品 {missing}"
-        logger.warning(f"🚫 推荐不合格（{reason}），触发重写 | 原文: {content[:60]}")
-        content = await _rewrite_recommend(msgs, context)
-        names = await _product_names(content)
-        missing = _evidence_missing(names, context)
-        if not names or missing:
-            reason = "一个商品都没点名" if not names else f"仍有编造 {missing}"
-            logger.warning(f"🚫 重写后仍不合格（{reason}），改用兜底话术 | 重写版: {content[:60]}")
-            content = RECOMMEND_FALLBACK
-
-    response.content = content
-    logger.info(
-        f"✅ recommend_node 推荐完成 | {len(content)} 字符 | 点名商品 {names or '无'}"
-    )
-
-    #🔴 推荐完必须归零：信号还留在阈值以上的话，用户下一句随便聊一句就又被推一次
-    return {
-        "messages": [response],
-        "signal_state": {"signal": SIGNAL_NONE, "level": 0},
         "final_reply": content,
     }

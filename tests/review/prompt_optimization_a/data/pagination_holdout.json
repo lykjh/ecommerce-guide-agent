@@ -1,0 +1,87 @@
+[
+  [
+    "holdout",
+    "punctuated_next",
+    [
+      "推荐300元以内黑色电子商品",
+      "第一个",
+      "下一页！",
+      "更多候选"
+    ],
+    [
+      {
+        "pending": true
+      },
+      {
+        "selected": 1,
+        "sku": 1010
+      },
+      {
+        "contains": "没有下一页",
+        "no_query": true,
+        "max_price": "300",
+        "color": "黑色"
+      },
+      {
+        "contains": "没有下一页",
+        "no_query": true,
+        "max_price": "300",
+        "color": "黑色"
+      }
+    ]
+  ],
+  [
+    "holdout",
+    "next_with_budget",
+    [
+      "推荐300元以内黑色电子商品",
+      "第一个",
+      "下一批，预算改成200元以内"
+    ],
+    [
+      {
+        "pending": true
+      },
+      {
+        "selected": 1,
+        "sku": 1010
+      },
+      {
+        "max_price": "200",
+        "color": "黑色",
+        "selected": 1,
+        "no_matches": true
+      }
+    ]
+  ],
+  [
+    "holdout",
+    "cancel_then_next",
+    [
+      "推荐300元以内黑色电子商品",
+      "第一个",
+      "取消价格限制，重新统计",
+      "下一页"
+    ],
+    [
+      {
+        "pending": true
+      },
+      {
+        "selected": 1
+      },
+      {
+        "max_price": null,
+        "color": "黑色",
+        "selected": 1,
+        "matches": true
+      },
+      {
+        "contains": "没有下一页",
+        "no_query": true,
+        "max_price": null,
+        "color": "黑色"
+      }
+    ]
+  ]
+]

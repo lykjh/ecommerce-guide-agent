@@ -1,14 +1,10 @@
-"""图装配 + 流式输出。
-
-这个文件只负责两件事：
-1. 把节点拼成一张图（谁接谁、意图怎么分流）
-2. 把节点的输出流给前端
-
-**任何业务逻辑都不放这里**——节点在 agent/nodes/，提示词在 agent/prompts.py，
-取数在 tool/。新增意图 = 写个 nodes/xxx.py + 在 ROUTE_MAP 加一行，本文件不用动。
-"""
+"""图装配与输出：意图节点写入分类，条件边按 router.ROUTE_MAP 分流。"""
 
 import asyncio
+from contextlib import aclosing, suppress
+import threading
+from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from dotenv import load_dotenv
 
@@ -19,51 +15,40 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from agent.deps import DB_PATH, INTERNAL_TAG
-from agent.memory import AgentState, memory_manager
+from agent.memory import memory_manager
+from agent.state import AgentState
+from agent.telemetry import TurnUsage
+from agent.budget import TurnBudget, BudgetStop, BUDGET_REPLY, budget_scope
 from agent.nodes.business import business_node
-from agent.nodes.chat import chat_node, recommend_node
+from agent.nodes.chat import chat_node
+from agent.nodes.recommend import recommend_node
 from agent.nodes.compare import compare_shop_node
 from agent.nodes.total import total_node
+from agent.nodes.routing import route_reply_node
 from agent.prompts import OUTPUT_FALLBACK
-from agent.router import SIGNAL_NONE, SIGNAL_THRESHOLD, router
-from utils.log_tool import get_loger, set_session_id
+from agent.router import ROUTE_MAP, SIGNAL_NONE, SIGNAL_THRESHOLD, router, route_with_fallback
+from agent.utils.log_tool import get_loger, set_session_id
 
 logger = get_loger("agent.main")
+get_loger("agent.telemetry")
+get_loger("agent.memory")
+get_loger("agent.router")
+get_loger("agent.budget")
+
+# shortcut: 仅覆盖同一进程内的线程和事件循环，多实例部署前需共享接纳控制。
+_session_guard = threading.Lock()
+_active_sessions: set[str] = set()
+SESSION_BUSY_REPLY = "上一条消息还在处理中，请等回复完成后再发送这条消息。"
+# 同一运行循环、同一数据库共用IO锁；最后一条连接退出后不保留锁或循环引用。
+_checkpoint_locks: WeakValueDictionary = WeakValueDictionary()
 
 
 # ============================================================
 # 一、意图 -> 节点 的映射
 # ============================================================
 
-#新增意图要同时改三处：这里、router 的 RouteName、prompts.py 的 ROUTE_SYSTEM 候选列表
-ROUTE_MAP = {
-    "闲聊": "chat_node",
-    "业务咨询": "business_node",
-    "概览筛选": "total_node",
-    "商品对比": "compare_shop_node",
-    "商品推荐": "recommend_node",
-}
-
-#会产出「给用户看的内容」的节点，流式输出只放行这些
-VISIBLE_NODES = ("business_node", "chat_node", "total_node", "compare_shop_node", "recommend_node")
-
-
-async def route_with_fallback(state) -> str:
-    """在 router 外面包一层兜底。
-
-    🔴 不加这层会直接崩：router 的 prompt 里列了 7 类意图，但只要返回的意图不在
-    ROUTE_MAP 里，LangGraph 会抛 `KeyError: '商品推荐'`，整轮对话直接挂掉。
-    兜底策略是记日志 + 转业务咨询（RAG 至少能答），而不是默默吞掉——
-    日志里会留下「哪个意图没接」，方便后面补实现。
-    """
-    intent = await router.router(state)
-    if intent not in ROUTE_MAP:
-        logger.warning(
-            f"⚠️ 意图「{intent}」尚未接入实现，兜底到业务咨询。已实现: {sorted(ROUTE_MAP)}"
-        )
-        return "业务咨询"
-    logger.info(f"🧭 路由结果: {intent} -> {ROUTE_MAP[intent]}")
-    return intent
+BUSINESS_NODES = (business_node, chat_node, total_node, compare_shop_node, recommend_node, route_reply_node)
+VISIBLE_NODES = tuple(node.__name__ for node in BUSINESS_NODES)
 
 
 def should_recommend(state) -> str:
@@ -91,20 +76,17 @@ def should_recommend(state) -> str:
 
 builder = StateGraph(AgentState)
 
-builder.add_node("business_node", business_node)
-builder.add_node("chat_node", chat_node)
-builder.add_node("total_node", total_node)
-builder.add_node("compare_shop_node", compare_shop_node)
-builder.add_node("recommend_node", recommend_node)
-#摘要节点由 memory_manager 提供，所有「真实对话」节点都要汇到它，否则这轮不进记忆
+builder.add_node("intent_node", router.node)
+for node in BUSINESS_NODES:
+    builder.add_node(node.__name__, node)
+# 业务节点汇入摘要；固定边界回复仍由 checkpointer 保存消息，但不额外调用模型。
 builder.add_node("summarize_node", memory_manager.summarize_node)
 
-#⚠️ router 不能注册成普通节点：
-#节点返回值必须是 dict（用来更新 state），而 router 返回的是 "闲聊"/"业务咨询" 这类字符串，
-#注册成节点会直接报 InvalidUpdateError: Expected dict, got 闲聊。
-#正确姿势是让它只当 START 的「分支函数」——只负责挑下一个节点，不产生 state 更新。
-#这样每轮也只调用一次路由模型（注册成节点会被调用两次：进节点一次、判分支一次）。
-builder.add_conditional_edges(START, route_with_fallback, ROUTE_MAP)
+# 路由节点写入本轮 intent；条件边只读取结果，不再重复调用模型。
+builder.add_edge(START, "intent_node")
+builder.add_conditional_edges("intent_node", route_with_fallback, ROUTE_MAP)
+# 固定边界回应不调用摘要模型；历史上下文仍由记忆窗口限制。
+builder.add_edge("route_reply_node", END)
 
 builder.add_edge("business_node", "summarize_node")
 builder.add_edge("total_node", "summarize_node")
@@ -128,13 +110,80 @@ async def get_ai_stream(user_input: str, thread_id: str = "default"):
         raise ValueError("输入过长，请缩短到 6000 字符以内")
     if not isinstance(thread_id, str) or not thread_id.strip():
         raise ValueError("会话 ID 不能为空")
+    async with aclosing(stream_reply(user_input, thread_id)) as stream:
+        async for chunk in stream:
+            yield chunk
+
+
+async def stream_reply(user_input: str, thread_id: str, request_id: str | None = None):
+    """消费入口已校验的参数；HTTP 和脚本入口共用会话互斥与流关闭逻辑。"""
+    with _session_guard:
+        busy = thread_id in _active_sessions
+        if not busy:
+            _active_sessions.add(thread_id)
+    if busy:
+        yield SESSION_BUSY_REPLY
+        return
+    try:
+        async with aclosing(_get_ai_stream(user_input, thread_id, request_id)) as stream:
+            async for chunk in stream:
+                yield chunk
+    finally:
+        with _session_guard:
+            _active_sessions.remove(thread_id)
+
+
+async def _get_ai_stream(user_input: str, thread_id: str, request_id: str | None = None):
     #把会话 id 绑到日志上下文：之后 router / 节点 / retriever 打的所有日志都会带上它，
     #排查某轮对话时直接 grep 这个 id 就能拉出完整链路，不用再拿时间戳去对齐几个文件。
     set_session_id(thread_id)
-    config = {"configurable": {"thread_id": thread_id}}
-    logger.info(f"▶️ 新一轮对话 | 输入「{user_input[:40]}」")
+    usage = TurnUsage(request_id or uuid4().hex)
+    budget = TurnBudget(usage.request_id)
+    queue = asyncio.Queue(maxsize=1)
 
+    async def produce():
+        with budget_scope(budget):
+            try:
+                async with asyncio.timeout_at(budget.deadline):
+                    async with aclosing(_stream_graph(user_input, thread_id, usage)) as stream:
+                        async for chunk in stream:
+                            await queue.put(chunk)
+            except (BudgetStop, TimeoutError) as exc:
+                budget.stop(exc.reason if isinstance(exc, BudgetStop) else "deadline")
+                await queue.put("\n\n" + BUDGET_REPLY)
+            except asyncio.CancelledError:
+                budget.stop("cancelled")
+                raise
+            except Exception as exc:
+                await queue.put(exc)
+            finally:
+                usage.finish()
+                budget.finish()
+        await queue.put(None)
+
+    producer = asyncio.create_task(produce())
+    try:
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            if isinstance(chunk, Exception):
+                raise chunk
+            yield chunk
+    finally:
+        producer.cancel()
+        with suppress(asyncio.CancelledError):
+            await producer
+
+
+async def _stream_graph(user_input: str, thread_id: str, usage: TurnUsage):
+    config = {"configurable": {"thread_id": thread_id}, "callbacks": [usage]}
+    logger.info("turn_start request_id=%s input_chars=%d", usage.request_id, len(user_input))
+
+    checkpoint_lock = _checkpoint_locks.setdefault((asyncio.get_running_loop(), DB_PATH), asyncio.Lock())
     async with AsyncSqliteSaver.from_conn_string(DB_PATH) as checkpointer:
+        # SDK的默认锁只保护单个连接，无法协调多会话的建表与写事务。
+        checkpointer.lock = checkpoint_lock
         graph = builder.compile(checkpointer=checkpointer)
 
         emitted = False

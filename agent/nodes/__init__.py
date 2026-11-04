@@ -1,5 +1,4 @@
 """节点包：一个意图（或一类意图）一个模块。
 
-新增一个意图 = 在这里加一个 xxx.py，再回 main_agent 的 ROUTE_MAP 加一行。
-主文件不需要动。
+新增业务节点需在 main_agent 注册，并在 router.ROUTE_MAP 配置分流。
 """

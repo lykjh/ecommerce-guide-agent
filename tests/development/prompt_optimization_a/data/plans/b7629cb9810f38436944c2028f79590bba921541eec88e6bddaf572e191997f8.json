@@ -1,0 +1,29 @@
+{
+  "scope": "real models + fixed HTTP-boundary fixtures; full dialogue sequences; not production prevalence estimate",
+  "plan_sha256": "d867a401e4458fb2c6c1661e308fbef1022f0ec87a88edea7c6eed5313a58e19",
+  "cases": [
+    [
+      "sku",
+      "cancel_spec",
+      [
+        "推荐256GB电子商品",
+        "取消容量要求，只推荐电子商品",
+        "第一个"
+      ],
+      [
+        {
+          "unsupported": true
+        },
+        {
+          "pending": true,
+          "unsupported": false
+        },
+        {
+          "selected": 1,
+          "matches": true
+        }
+      ]
+    ]
+  ],
+  "rounds": []
+}

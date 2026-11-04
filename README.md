@@ -1,48 +1,26 @@
-# ecommerce-guide-agent
+# 电商客服 Agent
 
-基于 LangGraph + RAG 的电商导购 Agent。
+当前Agent已有商品接口适配；用户确认的现行后端为`D:/desktop/IdeaProjects/shiwushop`，商品/分类源码契约已核对，运行服务和真实样例待验证，接入状态见[商城接口](docs/03-接口/商城接口.md)。Agent技术栈：FastAPI + LangGraph + 可收起聊天窗口。支持商品咨询/推荐/对比/概览、多轮记忆、预算与超时；政策、本人订单/物流和真实人工尚未接入。完整V1未通过上线验收。
 
-## 能力
+## 启动与使用
 
-- **意图路由**：闲聊 / 商品咨询自动分流（qwen-flash 轻量分类）
-- **商品问答**：Chroma 向量库 + DashScope Embedding，答案来自知识库而非模型编造
-- **知识库增量同步**：按文件内容 md5 去重，重复运行只处理新增和改动的文件
-- **分层记忆**：L1 最近窗口 + L2 会话摘要，发给模型的消息条数不随对话轮数线性膨胀
-- **流式输出**：Streamlit 界面逐字返回
+在项目根目录、配置好本机环境后运行：
 
-## 目录结构
-
-```
-agent/        图编排、意图路由、记忆管理
-rag/          知识库构建（build_db）与检索（retriever）
-utils/        配置加载、日志、路径
-config/       app.yml（模型与路径）、chroma.yml（向量库与切分）
-rag_text/     商品知识原始文本
-web.py        Streamlit 聊天界面
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn agent.http_api:app --host 127.0.0.1 --port 8001 --workers 1
 ```
 
-## 快速开始
+打开 http://127.0.0.1:8001/ 。端口可选；最近8000被其他项目占用。当前验证范围单worker、单事件循环。详细配置、模型Key和签名密钥要求见[维护手册](docs/10-操作与维护/维护手册.md)，不要覆盖既有.env或提交密钥。
 
-```bash
-pip install -r requirements.txt      # 依赖清单需自行生成
-cp .env.example .env                 # 填入 OPENAI_BASE_URL 与 OPENAI_API_KEY
-python -m rag.build_db               # 构建 / 增量同步向量库
-streamlit run web.py                 # 启动界面
+## 文档与测试
+
+[完整文档导航](docs/README.md) · [用户操作](docs/10-操作与维护/用户操作手册.md) · [当前施工进度](docs/05-施工进度/施工进度.md) · [验收结果](docs/09-验收与交付/验收报告.md)
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 -m unittest discover -s tests -p "test_*.py"
+node tests/http_ui.test.mjs
 ```
 
-> 必须用 `python -m rag.build_db` 运行，直接 `python rag/build_db.py` 会因包内导入失败。
+Python总回归包含Node.js执行的前端用例，需安装Node.js；详细测试条件见[测试计划](docs/08-测试/测试计划.md)。live_开头的测试须显式执行，会涉及真实模型/网络和费用，不能在文档迁移时自动运行。
 
-## 配置说明
-
-模型地址与 API Key 全部走环境变量，配置文件里只存变量名，避免密钥进仓库：
-
-| 环境变量 | 用途 |
-|---|---|
-| `OPENAI_BASE_URL` | 兼容 OpenAI 协议的服务地址 |
-| `OPENAI_API_KEY` | DashScope / 百炼 API Key |
-
-向量库相关参数（集合名、切分大小、召回条数、距离阈值）在 `config/chroma.yml`。
-
-## 说明
-
-`rag_text/` 内为示例商品数据。模型地址若使用云厂商的专属网关（含租户标识），请勿写入配置文件。
+业务代码在agent，配置、测试、文档分别在根config、tests、docs。历史商品文本rag_text不是已验收的政策知识库。文档入口见[文档导航](docs/README.md)。

@@ -1,80 +1,38 @@
-"""商品对比节点：抽出要对比的商品名 → 逐个取详情 → 让模型对比。
-
-🔴 这个节点最要紧的一条规则：**只要有任何一个商品没查到，就到此为止**。
-把「未找到」拼进提示词让模型对比，模型只能凭空编参数——那还不如直接说没有。
-（修这个之前，截图里的对比回答就是这么编出来的）
-"""
-
+"""对比路由确认的对象；商城详情不齐时先让用户确认。"""
+from pydantic import ValidationError
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
-from agent.deps import client, extract_client, INTERNAL_TAG
-from agent.memory import AgentState, CompareParams, memory_manager
-from agent.prompts import (
-    COMPARE_ANSWER_SYSTEM,
-    COMPARE_EXTRACT_SYSTEM,
-    COMPARE_NEED_TWO,
-    COMPARE_NOT_UNDERSTOOD,
-    COMPARE_REQUEST,
-    compare_missing,
-)
-from tool.product import fetch_product_data
-from utils.log_tool import get_loger
-
-logger = get_loger("agent.nodes.compare")
+from agent.budget import invoke_model
+from agent.deps import get_client
+from agent.prompts import COMPARE_ANSWER_SYSTEM, COMPARE_REQUEST, mall_error_reply
+from agent.state import AgentState
+from agent.tool.product import resolve_product
+from agent.tool.schemas import CandidateRef, MallError
 
 
 async def compare_shop_node(state: AgentState):
-    user_query = state["messages"][-1].content
-    logger.info(f"⚖️ compare_shop_node 进入 | 问题「{user_query[:30]}」")
-
-    structured_llm = (
-        extract_client
-        .with_structured_output(CompareParams)
-        .with_config({"tags": [INTERNAL_TAG]})
-    )
-
-    try:
-        extract_params = memory_manager.build_messages(state, COMPARE_EXTRACT_SYSTEM)
-
-        params = await structured_llm.ainvoke(extract_params)
-        products_to_compare = params.product_names
-        logger.info(f"✅ 对比商品名抽取完成 | {products_to_compare}")
-    except Exception as e:
-        #区分「抽取失败」和「商品查不到」，以前两者返回同一句话，线上根本没法定位
-        logger.exception(f"❌ 对比商品名抽取失败 | 问题「{user_query[:30]}」| {e}")
-        return {
-            "messages": [AIMessage(content=COMPARE_NOT_UNDERSTOOD)],
-            "final_reply": COMPARE_NOT_UNDERSTOOD,
-        }
-
-    if len(products_to_compare) < 2:
-        logger.warning(f"⚠️ 抽取到的商品不足 2 个 | {products_to_compare}")
-        return {
-            "messages": [AIMessage(content=COMPARE_NEED_TWO)],
-            "final_reply": COMPARE_NEED_TWO,
-        }
-
-    product_data_list = []
-    missing = []
-    for name in products_to_compare:
-        data = await fetch_product_data(name)
-        if data is None:
-            missing.append(name)
-        else:
-            product_data_list.append(data)
-
-    if missing:
-        logger.warning(f"⚠️ 部分商品未查到，终止对比 | 缺失 {missing}")
-        reply = compare_missing(missing)
-        return {"messages": [AIMessage(content=reply)], "final_reply": reply}
-
-    #join 必须在循环外：放在循环里每次都会覆盖，一旦将来加 continue 就会漏数据
-    context_str = "\n".join(product_data_list)
-    logger.info(f"⚖️ 开始对比 | 商品 {products_to_compare} | 素材 {len(context_str)} 字符")
-
-    system_prompt = SystemMessage(content=COMPARE_ANSWER_SYSTEM.format(context=context_str))
-    compare_request = HumanMessage(content=COMPARE_REQUEST.format(names=", ".join(products_to_compare)))
-
-    response = await client.ainvoke([system_prompt, compare_request])
-    logger.info(f"✅ compare_shop_node 回答完成 | {len(response.content)} 字符")
-    return {"messages": [response], "final_reply": response.content}
+    candidates = [CandidateRef.model_construct(**item) for item in state.get("candidate_products", [])]
+    details = []
+    for subject in state["route_subjects"]:
+        try:
+            result = await resolve_product(subject, candidates)
+        except ValidationError:
+            reply = "商品名称过长或查询参数不合法，请提供要对比的商品编号。"
+            return {"messages": [AIMessage(content=reply)], "final_reply": reply}
+        except MallError as exc:
+            reply = mall_error_reply(exc.kind, exc.http_status, exc.code)
+            return {"messages": [AIMessage(content=reply)], "final_reply": reply}
+        if result.status != "resolved":
+            reply = f"尚未确认“{subject}”，请提供它的商品编号后再对比。"
+            if result.status == "choose":
+                reply += "\n" + "\n".join(f"- {item.name}（商品编号 {item.product_id}）" for item in result.candidates)
+            return {"messages": [AIMessage(content=reply)], "final_reply": reply,
+                    "candidate_products": [item.model_dump() for item in result.candidates]}
+        details.append(result.product)
+    names = [product.name for product in details]
+    messages = [SystemMessage(content=COMPARE_ANSWER_SYSTEM.format(context="\n".join(p.model_dump_json() for p in details))),
+                HumanMessage(content=COMPARE_REQUEST.format(names=", ".join(names))),
+                HumanMessage(content=state["messages"][-1].content)]
+    response = await invoke_model(get_client(), messages, purpose="answer")
+    return {"messages": [response], "final_reply": response.content,
+            "task_context": {"intent": "商品对比", "product_names": names},
+            "candidate_products": [{"product_id": p.id, "name": p.name} for p in details]}

@@ -23,3 +23,13 @@ data/md5.json
 .idea/
 .vscode/
 *.iml
+
+# Local process documents and per-run evidence (keep files on disk).
+/docs/**/证据/*
+!/docs/09-验收与交付/证据/专项测试/
+/docs/09-验收与交付/证据/专项测试/*
+# Required input for tests/live_router_boundary.py --repeat-failures.
+!/docs/09-验收与交付/证据/专项测试/router-boundary-live-result-before-fix.json
+/docs/05-施工进度/任务单/*
+!/docs/05-施工进度/任务单/开发与审查测试交付要求.md
+/docs/07-项目周报/

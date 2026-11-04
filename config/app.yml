@@ -13,14 +13,17 @@ llm:
   # 只在这里写环境变量名，真实地址放 .env 或系统环境变量。
   base_url_env: "OPENAI_BASE_URL"
   # 模型名
-  model: "qwen-plus"
+  model: "qwen3.6-flash"
   # 路由模型名
-  router_model: "qwen-flash"
+  router_model: "qwen3.6-flash"
+  # 当前客服模型统一关闭推理；换模型或供应商时核对参数支持情况。
+  extra_body:
+    enable_thinking: false
   #路由模型温度
   router_temperature: 0.1
   # 信号判断模型（闲聊中追踪购买意向强度）
   # 判断是分类任务，同样用快模型 + 低温度，保证同一句话两次判断结果一致
-  signal_model: "qwen-flash"
+  signal_model: "qwen3.6-flash"
   signal_temperature: 0.1
   # langchain 的 provider 标识
   model_provider: "openai"
@@ -32,3 +35,7 @@ llm:
   api_key_env: "OPENAI_API_KEY"
   # 距离阈值
   max_distance: 0.8
+
+# 商城地址通过环境变量配置，便于切换部署环境。
+mall:
+  base_url_env: "MALL_BASE_URL"

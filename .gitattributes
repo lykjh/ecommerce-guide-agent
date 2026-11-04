@@ -1,0 +1,3 @@
+# Preserve archived evidence and fixture bytes for recorded SHA256 checks.
+/docs/09-验收与交付/证据/** -text
+/tests/**/data/** -text
