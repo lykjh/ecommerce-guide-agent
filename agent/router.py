@@ -158,6 +158,9 @@ class IntentRouter:
         query = state["messages"][-1].content.strip()
         action = {}
         task = state.get("task_context", {})
+        if query in ("浏览分类", "查看分类", "按分类浏览", "查看商品分类"):
+            return {"intent": "概览筛选", "final_reply": "", "route_subjects": [],
+                    "category_action": {"kind": "browse_root"}}
         if (task.get("intent") in ("商品推荐", "概览筛选") and state.get("product_page")
                 and re.fullmatch(r"(?:下一批|下一页|更多候选)[。！!]?[?？]?", query)):
             return {"intent": task["intent"], "final_reply": "", "route_subjects": [],

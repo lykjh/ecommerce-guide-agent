@@ -82,6 +82,10 @@ async def _mentions_product(text: str) -> bool:
     闲聊档的规则很简单粗暴——**任何商品都不许出现**，所以不用去商品库比对，
     只要判断「有没有提商品」就行。这也是为什么敢用便宜模型：任务很轻。
     """
+    # 闲聊没有商品证据；明确或模糊金额不交给模型再次投票放行。
+    if re.search(r"[¥￥]\s*\d|(?:\d+(?:\.\d+)?|[零一二两三四五六七八九十百千万几数]+(?:来|多)?)\s*(?:元|块)", text):
+        logger.warning("chat_guard blocked reason=unsupported_price")
+        return True
     resp = await invoke_model(get_extract_client().with_config({"tags": [INTERNAL_TAG]}), [
         SystemMessage(content=CHAT_GUARD_SYSTEM),
         HumanMessage(content=text),

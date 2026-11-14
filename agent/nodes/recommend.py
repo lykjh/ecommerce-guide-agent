@@ -19,10 +19,14 @@ logger = get_loger("agent.nodes.recommend")
 
 
 async def navigate_categories(category: dict, query: str | None, action: dict) -> tuple[dict, str | None]:
-    """一次仅读取一个必要层级；用户确认前不自动选取分支。"""
+    """明确关键词直接查商品；显式浏览才读分类，不猜分类ID。"""
     reply = None
     parent = None
-    if action.get("kind") == "keyword":
+    if not action and query is not None and not category.get("selected"):
+        return {"query": query, "mode": "search", "selected": None, "pending": False}, None
+    if action.get("kind") == "browse_root":
+        category = {}
+    elif action.get("kind") == "keyword":
         category = {"query": query, "mode": "search", "selected": None, "pending": False}
     elif action:
         index = action["index"]
@@ -36,8 +40,8 @@ async def navigate_categories(category: dict, query: str | None, action: dict) -
                 reply = "该分类没有可展开的子分类；可选择该分类作为范围。"
             else:
                 category = {"query": query, "selected": {**chosen, "source": "user"},
-                            "pending": False, "mode": "list" if query == chosen["name"] else "search"}
-    if reply is None and (parent is not None or (query is not None and not category)):
+                            "pending": False, "mode": "list" if query is None or query == chosen["name"] else "search"}
+    if reply is None and (parent is not None or action.get("kind") == "browse_root"):
         rows = await invoke_query(mall.list_categories, CategoryRequest(parentId=parent["id"] if parent else None))
         path = parent["path"] if parent else []
         candidates = [{**row.model_dump(), "path": path + [{"id": row.id, "name": row.name}],
@@ -63,7 +67,9 @@ async def navigate_categories(category: dict, query: str | None, action: dict) -
 async def product_search_node(state: AgentState, intent: str):
     action = state.get("category_action", {})
     previous_task = state.get("task_context", {})
-    if action:
+    if action.get("kind") == "browse_root" and "filters" not in previous_task:
+        params = FilterParams()
+    elif action:
         # checkpoint 中金额用字符串保存；内部可信状态只还原类型，不再做入口校验。
         saved = dict(previous_task["filters"])
         for name in ("min_price", "max_price"):
