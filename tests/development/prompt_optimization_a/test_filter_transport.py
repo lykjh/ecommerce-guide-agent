@@ -1,14 +1,15 @@
 """Exercise the real structured-output adapter with a local HTTP transport; no API calls."""
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from agent.deps import APP_CFG
 from agent.nodes.recommend import recommend_node
-from agent.tool.schemas import CategoryNav
+from agent.tool.schemas import DiscoveryRequest
+from tests.mall_fixtures import selection
 
 
 class FilterTransportTests(unittest.IsolatedAsyncioTestCase):
@@ -36,35 +37,39 @@ class FilterTransportTests(unittest.IsolatedAsyncioTestCase):
                                 base_url='http://local.test/v1', http_async_client=transport,
                                 max_retries=0)
             with patch('agent.nodes.recommend.get_extract_client', return_value=client), \
-                    patch('agent.nodes.recommend.mall.list_categories', return_value=[
-                        CategoryNav(id=1, name='电子', level=1, hasChildren=False, sortOrder=0)
-                    ]) as categories:
+                    patch('agent.nodes.recommend.mall.list_categories') as categories, \
+                    patch('agent.nodes.recommend.find_products', new_callable=AsyncMock, return_value=selection()) as products:
                 result = await recommend_node({'messages': [HumanMessage(content='推荐300元以内黑色电子商品')]})
         self.assertEqual(len(requests), 1)
-        return result, categories
+        categories.assert_not_called()
+        return result, products
 
     async def test_real_adapter_carries_schema_and_parses_filters(self):
-        result, categories = await self.extract({'category': '电子', 'max_price': '300',
+        result, products = await self.extract({'category': '电子', 'max_price': '300',
                                                  'min_price': None, 'color': '黑色', 'next_page': False, 'unsupported_specs': []})
         self.assertEqual(result['task_context']['filters']['max_price'], '300')
         self.assertEqual(result['task_context']['filters']['color'], '黑色')
-        self.assertTrue(result['category_context']['pending'])
-        categories.assert_called_once()
+        self.assertFalse(result['category_context']['pending'])
+        self.assertEqual(result['category_context']['mode'], 'search')
+        products.assert_awaited_once()
+        request, filters = products.await_args.args
+        self.assertEqual(request, DiscoveryRequest(q='电子', maxPrice='300', size=3))
+        self.assertEqual(filters.color, '黑色')
 
     async def test_invalid_external_array_fails_without_query_or_default(self):
-        result, categories = await self.extract({'category': '电子', 'unsupported_specs': {}})
+        result, products = await self.extract({'category': '电子', 'unsupported_specs': {}})
         self.assertIn('筛选条件解析失败', result['final_reply'])
         self.assertNotIn('task_context', result)
-        categories.assert_not_called()
+        products.assert_not_awaited()
 
     async def test_text_none_is_rejected_instead_of_silently_clearing_price(self):
         with self.assertLogs('agent.nodes.recommend', level='WARNING') as logs:
-            result, categories = await self.extract({'category': '电子', 'min_price': 'None',
+            result, products = await self.extract({'category': '电子', 'min_price': 'None',
                                                      'unsupported_specs': []})
         self.assertIn('min_price', logs.output[0])
         self.assertIn('decimal_parsing', logs.output[0])
         self.assertNotIn("'None'", logs.output[0])
         self.assertIn('筛选条件解析失败', result['final_reply'])
         self.assertNotIn('task_context', result)
-        categories.assert_not_called()
+        products.assert_not_awaited()
 

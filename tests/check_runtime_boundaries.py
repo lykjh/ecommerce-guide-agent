@@ -1,6 +1,6 @@
 """真实主图和 SQLite 的受控边界实验；模型、商城依赖使用替身。"""
 import asyncio
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 import importlib
 import json
@@ -40,6 +40,28 @@ def app(path):
         stack.enter_context(patch("agent.nodes.business.resolve_product", products.resolve_product))
         stack.enter_context(patch("agent.nodes.recommend.find_products", products.find_products))
         yield main, deps, products
+
+
+OFFLINE_ORIGIN = "http://agent.test"
+
+
+@asynccontextmanager
+async def offline_http_client(checkpoint_path):
+    import httpx
+    from agent import http_api
+
+    with patch.object(http_api, "DB_PATH", str(checkpoint_path)), patch.dict(os.environ, {
+        "AGENT_SESSION_SECRET": "offline-fixture-only-signing-secret",
+        "AGENT_PUBLIC_ORIGIN": OFFLINE_ORIGIN,
+        "MALL_BASE_URL": "http://mall.invalid",
+    }):
+        async with http_api.app.router.lifespan_context(http_api.app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=http_api.app),
+                base_url=OFFLINE_ORIGIN,
+                headers={"Origin": OFFLINE_ORIGIN},
+            ) as client:
+                yield client
 
 
 async def collect(main, query, thread):

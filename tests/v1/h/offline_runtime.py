@@ -12,12 +12,11 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from agent import http_api, main_agent
+from agent import main_agent
 from agent.budget import CURRENT_BUDGET
 from agent.utils.log_tool import get_session_id
 from tests.mall_fixtures import detail
 
-SECRET = "H-offline-only-signing-secret-32-characters"
 MARKERS = tuple(f"SESSION_{chr(65 + i)}" for i in range(10))
 
 
@@ -64,7 +63,6 @@ class OfflineModel(BaseChatModel):
 def offline_runtime(path, control=None):
     control = control if control is not None else {"calls": [], "summaries": []}
     with ExitStack() as stack:
-        stack.enter_context(patch.dict("os.environ", {"AGENT_SESSION_SECRET": SECRET}))
         stack.enter_context(patch.object(main_agent, "DB_PATH", str(path)))
         stack.enter_context(patch.object(main_agent.router, "client", OfflineModel(mode="route", control=control)))
         stack.enter_context(patch.object(main_agent.memory_manager, "summarizer_client", OfflineModel(mode="summary", control=control)))

@@ -4,9 +4,8 @@ import json
 import os
 from pathlib import Path
 import sys
-import httpx
 
-from agent import http_api
+from tests.check_runtime_boundaries import offline_http_client
 from tests.v1.h.offline_runtime import offline_runtime, snapshot, decode_events
 
 
@@ -15,9 +14,9 @@ async def run():
     request = json.loads(input_path.read_text(encoding="utf-8"))
     with offline_runtime(path):
         before = await snapshot(path, request["session_id"])
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=http_api.app), base_url="http://offline") as client:
+        async with offline_http_client(path) as client:
             response = await client.post("/api/chat", headers={"Authorization": "Bearer " + request["token"]}, json={"message": "商品SESSION_A 重启后继续"})
-        events = decode_events(response.text)
+        events = decode_events(response.raise_for_status().text)
         after = await snapshot(path, request["session_id"])
     output_path.write_text(json.dumps({"pid": os.getpid(), "summary_before": before["summary"], "summary_after": after["summary"], "page_before": before["product_page"], "page_after": after["product_page"], "events": events}, ensure_ascii=False), encoding="utf-8")
 

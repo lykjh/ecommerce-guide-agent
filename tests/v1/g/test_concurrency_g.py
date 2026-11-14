@@ -1,8 +1,7 @@
 """单worker真实图/SQLite竞争；依赖替身不访问在线模型或商城。"""
 import asyncio
-from contextlib import aclosing, asynccontextmanager
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager
 import json
-import os
 from pathlib import Path
 import tempfile
 import threading
@@ -10,7 +9,6 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
-from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -20,6 +18,7 @@ from agent import main_agent as main
 from agent import http_api
 from agent.budget import BudgetStop, TurnBudget, budget_scope, invoke_model, invoke_query
 from agent.prompts import ROUTE_REPLIES
+from tests.check_runtime_boundaries import OFFLINE_ORIGIN, offline_http_client
 
 
 async def collect(query, session, request_id=None):
@@ -266,16 +265,19 @@ class GraphConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 closed.set()
 
         model.ainvoke.side_effect = wait
-        with tempfile.TemporaryDirectory(prefix="agent-g-") as directory, \
-                patch.object(main, "DB_PATH", str(Path(directory) / "stream.db")), \
-                patch.dict(os.environ, {"AGENT_SESSION_SECRET": "g-offline-secret-at-least-thirty-two-characters"}), \
-                patch.object(main.router, "client", model):
-            with TestClient(http_api.app) as client:
-                token = client.post("/api/sessions").json()["session_token"]
+        async with AsyncExitStack() as stack:
+            directory = stack.enter_context(tempfile.TemporaryDirectory(prefix="agent-g-"))
+            db = Path(directory) / "stream.db"
+            stack.enter_context(patch.object(main, "DB_PATH", str(db)))
+            stack.enter_context(patch.object(main.router, "client", model))
+            client = await stack.enter_async_context(offline_http_client(db))
+            response = await client.post("/api/sessions")
+            token = response.raise_for_status().json()["session_token"]
             scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1",
                      "method": "POST", "scheme": "http", "path": "/api/chat", "raw_path": b"/api/chat",
-                     "query_string": b"", "root_path": "", "server": ("testserver", 80), "client": ("127.0.0.1", 1234),
-                     "headers": [(b"content-type", b"application/json"), (b"authorization", ("Bearer " + token).encode())]}
+                     "query_string": b"", "root_path": "", "server": (client.base_url.host, 80), "client": ("127.0.0.1", 1234),
+                     "headers": [(b"origin", OFFLINE_ORIGIN.encode()), (b"content-type", b"application/json"),
+                                 (b"authorization", ("Bearer " + token).encode())]}
             first = True
             sent = []
 
@@ -291,6 +293,7 @@ class GraphConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 sent.append(message)
 
             await asyncio.wait_for(http_api.app(scope, receive, send), 5)
+            self.assertEqual(sent[0]["status"], 200)
             self.assertTrue(closed.is_set())
             self.assertNotIn(token.split(".")[0], main._active_sessions)
             self.assertEqual(model.ainvoke.await_count, 1)

@@ -28,8 +28,14 @@ class PaginationFlowTests(unittest.IsolatedAsyncioTestCase):
             with app(db) as (main, _, products), patch.object(main.router,'client',model), \
                     patch.object(mall,'list_categories',return_value=[CategoryNav(id=7,name='电子',level=1,hasChildren=False,sortOrder=0)]), \
                     patch('agent.nodes.recommend.invoke_model',new_callable=AsyncMock,return_value=params) as extract:
-                products.find_products.side_effect = [first, MallError('http',http_status=503), second] if fail_next else [first,second]
                 await collect(main,'推荐电子商品' if intent=='商品推荐' else '统计电子商品','page')
+                keyword_search = products.find_products.await_args.args[0]
+                self.assertEqual(keyword_search.q, category)
+                self.assertIsNone(keyword_search.categoryId)
+                products.find_products.reset_mock()
+                products.find_products.side_effect = [first, MallError('http',http_status=503), second] if fail_next else [first,second]
+                await collect(main,'浏览分类','page')
+                products.find_products.assert_not_awaited()
                 await collect(main,'第一个','page')
                 replies = [await collect(main,'下一批','page'), await collect(main,'下一批','page')]
                 requests = [call.args[0] for call in products.find_products.await_args_list]
@@ -45,7 +51,7 @@ class PaginationFlowTests(unittest.IsolatedAsyncioTestCase):
                 extract.assert_awaited_once()
             async with AsyncSqliteSaver.from_conn_string(db) as saver:
                 values=(await main.builder.compile(checkpointer=saver).aget_state({'configurable':{'thread_id':'page'}})).values
-            self.assertEqual(values['task_context']['intent'],intent)
+            self.assertEqual(values['task_context']['intent'],'概览筛选')
             self.assertEqual(values['category_context']['selected']['id'],7)
             self.assertEqual(values['task_context']['filters']['color'],'黑色')
             self.assertEqual(values['category_action'],{})

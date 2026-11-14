@@ -14,13 +14,13 @@ import time
 import tracemalloc
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.runnables import RunnableLambda
 
-from agent import http_api, main_agent
+from agent import main_agent
 from agent.budget import BUDGET_REPLY
 from agent.tool.schemas import FilterParams
+from tests.check_runtime_boundaries import offline_http_client
 from tests.mall_fixtures import detail, selection
 
 OFFLINE_REPLY = "OFFLINE_TRANSPORT_OK"
@@ -71,6 +71,7 @@ async def calibrate(mode, concurrency, rounds):
     samples = []
     current = peak = server_current = server_peak = 0
     original = main_agent.stream_reply
+    transport_barrier = asyncio.Barrier(concurrency)
 
     async def measured_stream(*args, **kwargs):
         nonlocal server_current, server_peak
@@ -78,7 +79,7 @@ async def calibrate(mode, concurrency, rounds):
         server_peak = max(server_peak, server_current)
         try:
             if mode == "transport":
-                await asyncio.sleep(0)  # 显式让出事件循环，观察重叠的流而不是串行瞬时响应。
+                await transport_barrier.wait()
                 yield OFFLINE_REPLY
             else:
                 async with aclosing(original(*args, **kwargs)) as stream:
@@ -92,7 +93,7 @@ async def calibrate(mode, concurrency, rounds):
 
     with tempfile.TemporaryDirectory(prefix="agent-offline-capacity-") as directory, ExitStack() as stack:
         db = Path(directory) / "checkpoint.db"
-        stack.enter_context(patch.dict(os.environ, {"AGENT_SESSION_SECRET": "offline-calibration-secret-32-characters", "LANGSMITH_TRACING": "false", "LANGCHAIN_TRACING_V2": "false"}))
+        stack.enter_context(patch.dict(os.environ, {"LANGSMITH_TRACING": "false", "LANGCHAIN_TRACING_V2": "false"}))
         stack.enter_context(patch.object(main_agent, "DB_PATH", str(db)))
         stack.enter_context(patch("agent.http_api.stream_reply", measured_stream))
         stack.enter_context(patch("socket.socket.connect", side_effect=AssertionError("offline calibration forbids network")))
@@ -104,9 +105,8 @@ async def calibrate(mode, concurrency, rounds):
         stack.enter_context(patch("agent.tool.mall.list_categories", new=AsyncMock(return_value=[])))
         stack.enter_context(patch("agent.nodes.recommend.find_products", new=AsyncMock(return_value=selection(detail()))))
         stack.enter_context(patch.object(main_agent.memory_manager, "_summary_client", return_value=FakeListChatModel(responses=["离线测试耳机预算500元"])) )
-        transport = httpx.ASGITransport(app=http_api.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://localhost", timeout=35) as client:
-            tokens = [(await client.post("/api/sessions")).json()["session_token"] for _ in range(concurrency)]
+        async with offline_http_client(db) as client:
+            tokens = [(await client.post("/api/sessions")).raise_for_status().json()["session_token"] for _ in range(concurrency)]
             expected = OFFLINE_REPLY if mode == "transport" else "商品编号 101"
             tracemalloc.start()
             cpu_start, start = time.process_time(), time.perf_counter()

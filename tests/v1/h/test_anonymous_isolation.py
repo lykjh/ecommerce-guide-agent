@@ -9,8 +9,8 @@ import sys
 import tempfile
 import unittest
 
-import httpx
-from agent import http_api, main_agent
+from agent import main_agent
+from tests.check_runtime_boundaries import offline_http_client
 from tests.v1.h.offline_runtime import MARKERS, TraceCapture, decode_events, offline_runtime, seed_sessions, snapshot
 
 
@@ -26,8 +26,8 @@ class AnonymousIsolationTests(unittest.IsolatedAsyncioTestCase):
                 logging.getLogger(name).addHandler(trace)
                 self.addCleanup(logging.getLogger(name).removeHandler, trace)
             with offline_runtime(path) as control:
-                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=http_api.app), base_url="http://offline") as client:
-                    tokens = [(await client.post("/api/sessions")).json()["session_token"] for _ in MARKERS]
+                async with offline_http_client(path) as client:
+                    tokens = [(await client.post("/api/sessions")).raise_for_status().json()["session_token"] for _ in MARKERS]
                     sessions = [token.split(".")[0] for token in tokens]
                     await seed_sessions(path, sessions)
                     request_sessions = {}
@@ -69,7 +69,11 @@ class AnonymousIsolationTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(request_sessions[request_id], session_id)
                     for request_id, session_id in request_sessions.items():
                         related = [(name, sid, text) for name, sid, text in trace.entries if request_id in text]
-                        self.assertEqual({sid for _, sid, _ in related}, {session_id})
+                        admission = [(name, text.split()[0]) for name, sid, text in related if sid == "-"]
+                        self.assertCountEqual(admission, [
+                            ("agent.http", "identity_check"), ("agent.http", "session_access"),
+                        ])
+                        self.assertEqual({sid for _, sid, _ in related if sid != "-"}, {session_id})
                         for required in ("http_finish", "turn_usage", "budget_finish"):
                             self.assertTrue(any(required in text for _, _, text in related), (request_id, required))
                         self.assertTrue(any("reserved=0" in text and "reason=completed" in text for _, _, text in related))
@@ -82,8 +86,8 @@ class AnonymousIsolationTests(unittest.IsolatedAsyncioTestCase):
             path = Path(directory) / "memory.db"
             with offline_runtime(path) as control:
                 control.update(entered=asyncio.Event(), closed=asyncio.Event())
-                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=http_api.app), base_url="http://offline") as client:
-                    tokens = [(await client.post("/api/sessions")).json()["session_token"] for _ in range(2)]
+                async with offline_http_client(path) as client:
+                    tokens = [(await client.post("/api/sessions")).raise_for_status().json()["session_token"] for _ in range(2)]
                     sessions = [token.split(".")[0] for token in tokens]
                     await seed_sessions(path, sessions)
                     pending = asyncio.create_task(client.post("/api/chat", headers={"Authorization": "Bearer " + tokens[0]}, json={"message": "商品SESSION_A CANCEL"}))
@@ -112,8 +116,8 @@ class AnonymousIsolationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory(prefix="agent-h-auth-") as directory:
             path = Path(directory) / "memory.db"
             with offline_runtime(path) as control:
-                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=http_api.app), base_url="http://offline") as client:
-                    tokens = [(await client.post("/api/sessions")).json()["session_token"] for _ in range(2)]
+                async with offline_http_client(path) as client:
+                    tokens = [(await client.post("/api/sessions")).raise_for_status().json()["session_token"] for _ in range(2)]
                     sessions = [token.split(".")[0] for token in tokens]
                     await seed_sessions(path, sessions)
                     forged = sessions[1] + "." + tokens[0].split(".")[1]
@@ -132,8 +136,8 @@ class AnonymousIsolationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory(prefix="agent-h-restart-") as directory:
             path = Path(directory) / "memory.db"
             with offline_runtime(path):
-                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=http_api.app), base_url="http://offline") as client:
-                    token = (await client.post("/api/sessions")).json()["session_token"]
+                async with offline_http_client(path) as client:
+                    token = (await client.post("/api/sessions")).raise_for_status().json()["session_token"]
                     session_id = token.split(".")[0]
                     await seed_sessions(path, [session_id])
                     for turn in range(2):

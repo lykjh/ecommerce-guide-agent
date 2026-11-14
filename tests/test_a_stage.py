@@ -11,7 +11,8 @@ from urllib.parse import parse_qs, urlsplit
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from agent.budget import BudgetStop, TurnBudget, budget_scope
-from agent.nodes.recommend import recommend_node, navigate_categories
+from agent.nodes.recommend import recommend_node
+from agent.nodes.total import total_node
 from agent.router import IntentRouter
 from agent.tool import mall, product
 from agent.tool.schemas import CategoryNav, CategoryRequest, FilterParams, MallError, ProductListRequest, DiscoveryRequest
@@ -62,12 +63,15 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
         state = {**self.state, **first, "messages": [HumanMessage(content=query)]}
         route = IntentRouter(client=AsyncMock())
         state.update(await route.node(state))
-        return await recommend_node(state)
+        return await total_node(state)
+
+    async def browse(self):
+        return await self.choose({}, "浏览分类")
 
     async def test_terminal_page_survives_repeated_next_requests(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         state = await self.choose(first, "第一个")
-        self.extract.return_value = FilterParams(category="数码", next_page=True)
+        self.extract.return_value = FilterParams(next_page=True)
         self.products.reset_mock()
         for _ in range(2):
             old_page = state["product_page"]
@@ -81,11 +85,14 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(mode=mode):
                 self.products.side_effect = None
                 self.extract.return_value = FilterParams(category="数码")
-                first = await recommend_node(self.state)
-                state = await self.choose(first, "第一个")
-                state["category_context"]["mode"] = mode
-                state["product_page"].update(mode=mode, hasMore=True, nextCursor=cursor)
-                self.extract.return_value = FilterParams(category="数码", next_page=True)
+                if mode == "list":
+                    state = await self.choose(await self.browse(), "第一个")
+                else:
+                    state = await recommend_node(self.state)
+                state["product_page"].update(hasMore=True, nextCursor=cursor)
+                self.extract.return_value = FilterParams(
+                    category=state["task_context"]["filters"]["category"], next_page=True,
+                )
                 self.products.reset_mock()
                 self.products.side_effect = MallError("network")
                 failed = await recommend_node({**state, "messages": [HumanMessage(content="下一批")]})
@@ -99,7 +106,7 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.products.await_count, 2)
 
     async def test_long_selection_and_browse_ordinals_are_out_of_range(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         for text in ("第" + "9" * 5000 + "个", "查看第" + "9" * 5000 + "个子分类"):
             with self.subTest(command=text[:3]):
                 self.assertLess(len(text), 6000)
@@ -109,8 +116,9 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
         self.products.assert_not_awaited()
         self.categories.assert_called_once()
 
-    async def test_root_candidates_no_automatic_product_search(self):
-        result = await recommend_node(self.state)
+    async def test_explicit_root_browse_skips_extraction_and_product_search(self):
+        result = await self.browse()
+        self.extract.assert_not_awaited()
         self.products.assert_not_awaited()
         self.categories.assert_called_once_with(CategoryRequest())
         self.assertEqual([c["id"] for c in result["category_context"]["candidates"]], [1, 2])
@@ -118,7 +126,7 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["category_context"]["selected"])
 
     async def test_ordinal_beats_stale_product_and_parent_is_selectable(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         first["candidate_products"] = [{"product_id": 999, "name": "旧商品"}]
         result = await self.choose(first, "第一个")
         request = self.products.await_args.args[0]
@@ -127,10 +135,10 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["category_context"]["selected"]["source"], "user")
         self.assertEqual(result["product_page"]["mode"], "list")
         self.categories.assert_called_once()
-        self.extract.assert_awaited_once()
+        self.extract.assert_not_awaited()
 
     async def test_browse_one_branch_keeps_verified_path_and_does_not_claim_unique(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         self.categories.return_value = [nav(3, "耳机", False)]
         result = await self.choose(first, "查看第二个子分类")
         self.categories.assert_called_with(CategoryRequest(parentId=2))
@@ -142,7 +150,7 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.categories.call_count, 2)
 
     async def test_empty_child_keeps_parent_choice(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         self.categories.return_value = []
         result = await self.choose(first, "查看第一个子分类")
         self.assertEqual(result["category_context"], first["category_context"])
@@ -150,38 +158,49 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("子分类为空", result["final_reply"])
 
     async def test_out_of_range_ordinal_does_not_query(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         result = await self.choose(first, "第99个")
         self.assertIn("不在", result["final_reply"])
         self.products.assert_not_awaited()
         self.categories.assert_called_once()
 
     async def test_keyword_fallback_is_explicit_and_no_category_is_claimed(self):
-        first = await recommend_node(self.state)
-        result = await self.choose(first, "按关键词搜索")
+        browsing = await self.choose(
+            {"task_context": {"filters": FilterParams(category="数码").model_dump()}},
+            "浏览分类",
+        )
+        result = await self.choose(browsing, "按关键词搜索")
         self.assertIsInstance(self.products.await_args.args[0], DiscoveryRequest)
         self.assertIsNone(self.products.await_args.args[0].categoryId)
+        self.assertEqual(self.products.await_args.args[0].q, "数码")
         self.assertIn("未确认精确分类", result["final_reply"])
         self.categories.assert_called_once()
 
     async def test_category_404_reports_category_failure_without_product_lookup(self):
         self.categories.side_effect = MallError("http", http_status=404, code=404)
-        result = await recommend_node(self.state)
+        result = await self.browse()
         self.assertIn("分类查询未完成", result["final_reply"])
         self.assertNotIn("商品已无法获取", result["final_reply"])
         self.assertNotIn("重新选择商品", result["final_reply"])
         self.products.assert_not_awaited()
 
+    async def test_keyword_search_does_not_query_categories(self):
+        result = await recommend_node(self.state)
+        self.categories.assert_not_called()
+        self.products.assert_awaited_once()
+        self.assertEqual(self.products.await_args.args[0], DiscoveryRequest(q="数码", size=3))
+        self.assertIn("按关键词搜索", result["final_reply"])
+
     async def test_empty_root_can_search_but_failure_cannot(self):
         self.categories.return_value = []
-        result = await recommend_node(self.state)
+        result = await self.browse()
         self.products.assert_awaited_once()
         self.assertIn("按关键词搜索", result["final_reply"])
         self.products.reset_mock()
         self.categories.side_effect = MallError("business", code=404)
-        failed = await recommend_node(self.state)
+        failed = await self.browse()
         self.products.assert_not_awaited()
-        self.assertNotIn("未确认精确分类", failed["final_reply"])
+        self.assertIn("分类查询未完成", failed["final_reply"])
         self.assertEqual(failed["product_page"], {})
 
     async def test_budget_counts_category_and_prevents_next_query(self):
@@ -191,7 +210,7 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
             budget = TurnBudget("a-category-budget")
             budget.MAX_QUERIES = 1
             with budget_scope(budget), self.assertRaisesRegex(BudgetStop, "query_calls"):
-                await recommend_node(self.state)
+                await self.browse()
             self.assertEqual(budget.queries, 1)
             search.assert_not_called()
 
@@ -200,11 +219,11 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
             raise asyncio.CancelledError()
         with patch("agent.nodes.recommend.invoke_query", side_effect=cancelled):
             with self.assertRaises(asyncio.CancelledError):
-                await recommend_node(self.state)
+                await self.browse()
         self.products.assert_not_awaited()
 
     async def test_topic_change_exits_pending_selection(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         router = IntentRouter(client=AsyncMock())
         with patch.object(router, "decision", return_value=("闲聊", [])):
             update = await router.node({**first, "messages": [HumanMessage(content="你好，聊聊别的")]})
@@ -213,12 +232,12 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update["category_action"], {})
 
     async def test_budget_and_color_changes_keep_category_reset_cursor(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         selected = await self.choose(first, "第一个")
         selected["product_page"].update(hasMore=True, nextCursor=55)
-        for params in (FilterParams(category="数码", max_price="300", next_page=True),
-                       FilterParams(category="数码", color="黑色", next_page=True),
-                       FilterParams(category="数码", next_page=True)):
+        for params in (FilterParams(max_price="300", next_page=True),
+                       FilterParams(color="黑色", next_page=True),
+                       FilterParams(next_page=True)):
             with self.subTest(params=params):
                 old = {**selected, "product_page": {**selected["product_page"], "filters": {**selected["product_page"]["filters"], "color": "旧颜色"}}}
                 self.extract.return_value = params
@@ -228,10 +247,10 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
         self.categories.assert_called_once()
 
     async def test_same_conditions_page_cursor_and_mode_are_required(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         selected = await self.choose(first, "第一个")
         selected["product_page"].update(hasMore=True, nextCursor=55)
-        self.extract.return_value = FilterParams(category="数码", next_page=True)
+        self.extract.return_value = FilterParams(next_page=True)
         await recommend_node({**selected, "messages": [HumanMessage(content="下一批")]})
         self.assertEqual(self.products.await_args.args[0].afterId, 55)
         selected["product_page"]["mode"] = "search"
@@ -239,15 +258,18 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.products.await_args.args[0].afterId)
 
     async def test_new_category_clears_selection_and_page(self):
-        first = await recommend_node(self.state)
+        first = await self.browse()
         selected = await self.choose(first, "第一个")
-        self.extract.return_value = FilterParams(category="服装")
+        selected["product_page"].update(hasMore=True, nextCursor=55)
+        self.extract.return_value = FilterParams(category="服装", next_page=True)
         self.products.reset_mock()
         result = await recommend_node({**selected, "messages": [HumanMessage(content="换成服装")]})
         self.assertIsNone(result["category_context"]["selected"])
-        self.assertEqual(result["product_page"], {})
-        self.assertEqual(self.categories.call_count, 2)
-        self.products.assert_not_awaited()
+        self.assertEqual(result["product_page"]["mode"], "search")
+        self.assertIsNone(result["product_page"]["category_id"])
+        self.categories.assert_called_once()
+        self.products.assert_awaited_once()
+        self.assertEqual(self.products.await_args.args[0], DiscoveryRequest(q="服装", size=3))
 
     async def test_unsupported_hard_specs_stop_before_queries(self):
         self.extract.return_value = FilterParams(category="数码", unsupported_specs=["256GB", "专业版"])
@@ -280,7 +302,7 @@ class StageNodeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_large_level_is_not_silently_truncated(self):
         self.categories.return_value = [nav(i, "长分类名称" * 100) for i in range(1, 30)]
-        result = await recommend_node(self.state)
+        result = await self.browse()
         self.assertIn("超出", result["final_reply"])
         self.assertEqual(result["category_context"], {})
         self.products.assert_not_awaited()
@@ -313,8 +335,8 @@ class CategoryPersistenceTests(unittest.IsolatedAsyncioTestCase):
             db = directory + "/stage-a.db"
             model = AsyncMock()
             model.ainvoke.return_value = AIMessage(content=json.dumps({"intent": "商品推荐", "subjects": [], "needs_clarification": False}))
-            with app(db) as (main, _, products), patch.object(main.router, "client", model), patch.object(mall, "list_categories", return_value=[nav(), nav(2, "家电")]), patch("agent.nodes.recommend.invoke_model", return_value=FilterParams(category="数码")):
-                await collect(main, "推荐数码商品", "a")
+            with app(db) as (main, _, products), patch.object(main.router, "client", model), patch.object(mall, "list_categories", return_value=[nav(), nav(2, "家电")]):
+                await collect(main, "浏览分类", "a")
                 products.find_products.assert_not_awaited()
             with app(db) as (main, _, products), patch.object(main.router, "client", model):
                 await collect(main, "第二个", "a")
