@@ -1,7 +1,7 @@
 """独立 HTTP 入口：匿名会话凭证、输入校验和 SSE 传输。"""
 
 import asyncio
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 import hashlib
 import hmac
 import json
@@ -12,7 +12,7 @@ from time import monotonic
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -23,7 +23,26 @@ from starlette.requests import ClientDisconnect
 from agent.main_agent import stream_reply
 from agent.utils.log_tool import get_loger, set_session_id
 
-app = FastAPI(title="电商客服 Agent", version="1.0.0")
+from agent.deps import DB_PATH
+from agent.identity import MALL_AUTH_COOKIE, IdentityClient, IdentityError, validate_url
+from agent.session_store import SessionStore, SessionStoreError
+
+
+@asynccontextmanager
+async def lifespan(app):
+    app.state.owners = SessionStore(Path(DB_PATH).with_suffix('.sessions.db'))
+    app.state.identity = IdentityClient()
+    try:
+        await app.state.owners.open()
+    except SessionStoreError:
+        logger.error("session_access result=unavailable code=SESSION_STORE_UNAVAILABLE")
+    try:
+        yield
+    finally:
+        await app.state.owners.close()
+
+
+app = FastAPI(title="电商客服 Agent", version="1.1.0", lifespan=lifespan)
 logger = get_loger("agent.http")
 ui_path = Path(__file__).with_name("http_ui")
 app.mount("/ui", StaticFiles(directory=ui_path, check_dir=False), name="ui")
@@ -58,7 +77,7 @@ class ErrorResponse(BaseModel):
 def session_secret() -> str:
     secret = os.getenv("AGENT_SESSION_SECRET", "")
     if len(secret) < 32:
-        raise HTTPException(503, {"code": "CONFIGURATION_ERROR", "message": "会话密钥尚未配置。"})
+        raise HTTPException(503, {"code": "CONFIGURATION_ERROR", "message": "客服服务配置未完成。"})
     return secret
 
 
@@ -68,14 +87,101 @@ def session_signature(session_id: str, secret: str) -> str:
 
 def authenticated_session(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
-    secret: Annotated[str, Depends(session_secret)],
+    request: Request,
 ) -> str:
+    secret = request.state.secret
     if credentials is None or re.fullmatch(r"[0-9a-f]{32}\.[0-9a-f]{64}", credentials.credentials) is None:
         raise HTTPException(401, {"code": "INVALID_SESSION", "message": "请新建会话后重试。"})
     session_id, signature = credentials.credentials.split(".")
     if not hmac.compare_digest(signature, session_signature(session_id, secret)):
         raise HTTPException(401, {"code": "INVALID_SESSION", "message": "请新建会话后重试。"})
     return session_id
+
+
+ERRORS = {
+    'CONFIGURATION_ERROR': (503, '客服服务配置未完成。'),
+    'ORIGIN_NOT_ALLOWED': (403, '请求来源不受支持。'),
+    'IDENTITY_UNAVAILABLE': (503, '暂时无法确认登录状态，请稍后重试。'),
+    'IDENTITY_BAD_RESPONSE': (502, '登录状态响应异常，请稍后重试。'),
+    'IDENTITY_BUSY': (503, '登录状态校验繁忙，请稍后重试。'),
+    'SESSION_STORE_UNAVAILABLE': (503, '会话服务暂时不可用，请稍后重试。'),
+    'INVALID_SESSION': (401, '请新建会话后重试。'),
+    'SESSION_IDENTITY_CHANGED': (409, '登录身份已变化，请在新会话中重新发送。'),
+}
+
+
+def reject(code):
+    status, message = ERRORS[code]
+    raise HTTPException(status, {'code': code, 'message': message})
+
+
+class SourceBoundary:
+    """Validate at ingress without adding a cancellation task group around SSE."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        request.state.request_id = uuid4().hex
+        if request.method == 'POST' and request.url.path.removeprefix(scope.get('root_path', '')) in ('/api/sessions', '/api/chat'):
+            try:
+                origin = validate_url(os.getenv('AGENT_PUBLIC_ORIGIN', ''), origin=True)
+                if request.headers.get('origin') != origin:
+                    reject('ORIGIN_NOT_ALLOWED')
+                request.state.mall_base = validate_url(os.getenv('MALL_BASE_URL', ''))
+                request.state.secret = session_secret()
+            except IdentityError as exc:
+                status, message = ERRORS[exc.code]
+                await JSONResponse({'error': {'code': exc.code, 'message': message}}, status_code=status)(scope, receive, send)
+                return
+            except HTTPException as exc:
+                await JSONResponse({'error': exc.detail}, status_code=exc.status_code)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(SourceBoundary)
+
+
+async def current_identity(request, operation):
+    started = monotonic()
+    result, code = 'cancelled', '-'
+    try:
+        owner = await request.app.state.identity.resolve(request.cookies.get(MALL_AUTH_COOKIE),
+                                                        request.state.mall_base, request.state.secret)
+        result = owner.kind
+        return owner
+    except IdentityError as exc:
+        result, code = 'failed', exc.code
+        reject(code)
+    finally:
+        logger.info('identity_check request_id=%s operation=%s result=%s code=%s elapsed_ms=%.1f',
+                    request.state.request_id, operation, result, code, (monotonic()-started)*1000)
+
+
+async def owned_session(request: Request, session_id: str):
+    started = monotonic()
+    code = '-'
+    try:
+        owner = await request.app.state.owners.get(session_id)
+        if owner is None:
+            reject('INVALID_SESSION')
+        current = await current_identity(request, 'chat')
+        if current != owner:
+            reject('SESSION_IDENTITY_CHANGED')
+        return session_id
+    except SessionStoreError:
+        code = 'SESSION_STORE_UNAVAILABLE'
+        reject(code)
+    except HTTPException as exc:
+        code = exc.detail['code']
+        raise
+    finally:
+        logger.info('session_access request_id=%s operation=chat code=%s elapsed_ms=%.1f',
+                    request.state.request_id, code, (monotonic()-started)*1000)
 
 
 @app.exception_handler(HTTPException)
@@ -126,10 +232,22 @@ async def health():
 
 @app.post(
     "/api/sessions", status_code=201, response_model=SessionResponse,
-    responses={503: {"model": ErrorResponse, "description": "CONFIGURATION_ERROR：服务尚未配置有效会话密钥。"}},
+    responses={status: {"model": ErrorResponse, "description": " / ".join(code for code, value in ERRORS.items() if value[0] == status)} for status in (403, 502, 503)},
 )
-async def create_session(secret: Annotated[str, Depends(session_secret)]):
+async def create_session(request: Request):
+    secret = request.state.secret
+    owner = await current_identity(request, 'create')
     session_id = uuid4().hex
+    started = monotonic()
+    code = '-'
+    try:
+        await request.app.state.owners.create(session_id, owner)
+    except SessionStoreError:
+        code = 'SESSION_STORE_UNAVAILABLE'
+        reject(code)
+    finally:
+        logger.info('session_access request_id=%s operation=create code=%s elapsed_ms=%.1f',
+                    request.state.request_id, code, (monotonic()-started)*1000)
     return {"session_token": f"{session_id}.{session_signature(session_id, secret)}"}
 
 
@@ -141,13 +259,15 @@ async def create_session(secret: Annotated[str, Depends(session_secret)]):
             "description": "SSE：meta → delta → done；服务异常以 error 事件结束。",
             "content": {"text/event-stream": {"schema": {"type": "string"}}},
         },
+        **{status: {"model": ErrorResponse, "description": " / ".join(code for code, value in ERRORS.items() if value[0] == status)} for status in (403, 409, 502)},
         401: {"model": ErrorResponse, "description": "INVALID_SESSION：会话凭证缺失、格式错误或签名无效。"},
         422: {"model": ErrorResponse, "description": "INVALID_REQUEST：请求须仅包含 1 至 6000 字符的非空 message。"},
-        503: {"model": ErrorResponse, "description": "CONFIGURATION_ERROR：服务尚未配置有效会话密钥。"},
+        503: {"model": ErrorResponse, "description": "CONFIGURATION_ERROR / IDENTITY_UNAVAILABLE / IDENTITY_BUSY / SESSION_STORE_UNAVAILABLE"},
     },
 )
-async def chat(body: ChatRequest, session_id: Annotated[str, Depends(authenticated_session)]):
-    request_id = uuid4().hex
+async def chat(request: Request, body: ChatRequest, session_id: Annotated[str, Depends(authenticated_session)]):
+    await owned_session(request, session_id)
+    request_id = request.state.request_id
 
     async def events():
         set_session_id(session_id)

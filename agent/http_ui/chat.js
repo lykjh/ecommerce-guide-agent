@@ -53,12 +53,25 @@ const tokenKey = "xiaonuan-session";
 let token = sessionStorage.getItem(tokenKey);
 let controller = null;
 let unread = false;
+let generation = 0;
+const appRoot = new URL("../", import.meta.url);
+const embedded = window.parent !== window && location.search === "?embed=1";
+
+function notifyHost(type, fields = {}) {
+  window.parent.postMessage({ type, version: 1, ...fields }, location.origin);
+}
 
 function updateLauncher() {
+  let notice = "";
+  if (panel.hidden && (controller || unread)) notice = controller ? "busy" : "unread";
+  if (embedded) {
+    notifyHost("assistant:notice", { notice });
+    return;
+  }
   launcher.setAttribute("aria-expanded", String(!panel.hidden));
   launcher.setAttribute("aria-label", panel.hidden ? "展开客服窗口" : "收起客服窗口");
   launcherLabel.textContent = panel.hidden ? "小暖客服" : "收起小暖";
-  launcherNotice.hidden = !panel.hidden || (!controller && !unread);
+  launcherNotice.hidden = !notice;
   launcherNotice.textContent = controller ? "正在回复…" : "有新回复";
 }
 
@@ -68,18 +81,22 @@ function setPanelOpen(open) {
     unread = false;
     chatScroll.scrollTop = chatScroll.scrollHeight;
     (input.disabled ? minimize : input).focus();
-  } else {
+  } else if (!embedded) {
     launcher.focus();
   }
   updateLauncher();
 }
 
+function minimizePanel() {
+  if (embedded) notifyHost("assistant:minimize");
+  else setPanelOpen(false);
+}
 launcher.addEventListener("click", () => setPanelOpen(panel.hidden));
-minimize.addEventListener("click", () => setPanelOpen(false));
+minimize.addEventListener("click", minimizePanel);
 panel.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     event.preventDefault();
-    setPanelOpen(false);
+    minimizePanel();
   }
 });
 for (const button of suggestions) {
@@ -88,11 +105,10 @@ for (const button of suggestions) {
     input.focus();
   });
 }
-updateLauncher();
 
 function setBusy(busy) {
   sendButton.disabled = busy;
-  newButton.disabled = busy;
+  newButton.disabled = false;
   input.disabled = busy;
   stopButton.disabled = !busy;
   for (const button of suggestions) button.disabled = busy;
@@ -122,34 +138,86 @@ function responseError(result, statusCode) {
     : `客服接口返回异常（HTTP ${statusCode}），请确认打开的是客服服务地址。`);
 }
 
-async function createSession(signal) {
-  const response = await fetch("/api/sessions", { method: "POST", signal });
+function resetSession(notice = "新会话已开始") {
+  generation += 1;
+  controller?.abort();
+  controller = null;
+  token = null;
+  sessionStorage.removeItem(tokenKey);
+  messages.replaceChildren();
+  input.value = "";
+  welcome.hidden = false;
+  unread = false;
+  status.textContent = notice;
+  setBusy(false);
+}
+
+const identityChannel = new BroadcastChannel("xiaonuan.identity.v1");
+const identityNotice = data => data?.type === "mall:identity-changed" && data.version === 1;
+const identityChangedText = "登录身份已变化，请在新会话中重新发送。";
+window.addEventListener("message", event => {
+  if (event.origin !== location.origin || event.source !== window.parent || event.data?.version !== 1) return;
+  const { type, open } = event.data;
+  if (type === "mall:identity-changed") {
+    resetSession(identityChangedText);
+    identityChannel.postMessage({ type, version: 1 });
+  } else if (embedded && type === "mall:assistant-reset") {
+    // 就绪前宿主已广播，此处只丢弃本页可能已读入内存的旧会话。
+    resetSession(identityChangedText);
+  } else if (embedded && type === "mall:assistant-visibility" && typeof open === "boolean") {
+    setPanelOpen(open);
+  }
+});
+identityChannel.addEventListener("message", event => {
+  if (!identityNotice(event.data)) return;
+  resetSession(identityChangedText);
+  if (embedded) notifyHost("assistant:identity-invalidated");
+});
+if (embedded) {
+  document.body.classList.add("embedded");
+  panel.hidden = true;
+  notifyHost("assistant:ready");
+}
+updateLauncher();
+
+async function createSession(signal, epoch) {
+  if (embedded) {
+    await new Promise((resolve, reject) => {
+      function cleanup() {
+        window.removeEventListener("message", confirmed);
+        signal.removeEventListener("abort", aborted);
+      }
+      function aborted() {
+        cleanup();
+        reject(signal.reason);
+      }
+      function confirmed(event) {
+        if (event.origin !== location.origin || event.source !== window.parent ||
+            event.data?.type !== "mall:identity-confirmed" || event.data.version !== 1 ||
+            event.data.generation !== epoch || typeof event.data.ok !== "boolean") return;
+        cleanup();
+        if (event.data.ok) resolve();
+        else reject(new Error("无法确认商城登录状态，请稍后重新发送。"));
+      }
+      signal.throwIfAborted();
+      window.addEventListener("message", confirmed);
+      signal.addEventListener("abort", aborted, { once: true });
+      notifyHost("assistant:ensure-identity", { generation: epoch });
+    });
+    if (epoch !== generation) return;
+    signal.throwIfAborted();
+  }
+  const response = await fetch(new URL("api/sessions", appRoot), { method: "POST", signal, credentials: "same-origin" });
   const result = await response.json();
+  if (epoch !== generation) return;
   if (!response.ok) throw responseError(result, response.status);
   token = result.session_token;
   sessionStorage.setItem(tokenKey, token);
 }
 
-newButton.addEventListener("click", async () => {
-  controller = new AbortController();
-  setBusy(true);
-  status.textContent = "正在创建新会话…";
-  try {
-    await createSession(controller.signal);
-    messages.replaceChildren();
-    welcome.hidden = false;
-    unread = false;
-    status.textContent = "新会话已开始";
-  } catch (error) {
-    status.textContent = error.name === "AbortError" ? "已停止" : `创建失败：${error.message}`;
-  } finally {
-    controller = null;
-    setBusy(false);
-    if (!panel.hidden) input.focus();
-  }
-});
+newButton.addEventListener("click", () => resetSession());
 
-stopButton.addEventListener("click", () => controller.abort());
+stopButton.addEventListener("click", () => controller?.abort());
 input.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
@@ -165,7 +233,9 @@ form.addEventListener("submit", async (event) => {
     input.focus();
     return;
   }
-  controller = new AbortController();
+  const epoch = generation;
+  const requestController = new AbortController();
+  controller = requestController;
   setBusy(true);
   addMessage("user", message);
   const reply = addMessage("assistant", "");
@@ -174,23 +244,30 @@ form.addEventListener("submit", async (event) => {
   let requestId = "";
   let finished = false;
   try {
-    if (!token) await createSession(controller.signal);
-    const response = await fetch("/api/chat", {
+    if (!token) await createSession(requestController.signal, epoch);
+    if (epoch !== generation) return;
+    requestController.signal.throwIfAborted();
+    const response = await fetch(new URL("api/chat", appRoot), {
+      credentials: "same-origin",
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ message }),
-      signal: controller.signal,
+      signal: requestController.signal,
     });
+    if (epoch !== generation) return;
     if (!response.ok) {
       const result = await response.json();
-      if (response.status === 401) {
-        token = null;
-        sessionStorage.removeItem(tokenKey);
+      if (epoch !== generation) return;
+      if ((response.status === 401 && result?.error?.code === "INVALID_SESSION") ||
+          (response.status === 409 && result?.error?.code === "SESSION_IDENTITY_CHANGED")) {
+        resetSession(result.error.message);
+        return;
       }
       throw responseError(result, response.status);
     }
     for await (const { event, data } of readEvents(response.body)) {
-      controller.signal.throwIfAborted();
+      if (epoch !== generation) return;
+      requestController.signal.throwIfAborted();
       switch (event) {
         case "meta":
           requestId = data.request_id;
@@ -201,7 +278,8 @@ form.addEventListener("submit", async (event) => {
           // 审核后的分片可能同批到达；按Unicode码点展示，避免切断代理对。
           const characters = Array.from(data.text);
           for (let i = 0; i < characters.length; i += 2) {
-            controller.signal.throwIfAborted();
+            if (epoch !== generation) return;
+            requestController.signal.throwIfAborted();
             reply.textContent += characters.slice(i, i + 2).join("");
             chatScroll.scrollTop = chatScroll.scrollHeight;
             if (!document.hidden && !panel.hidden && !reducedMotion.matches) {
@@ -222,13 +300,15 @@ form.addEventListener("submit", async (event) => {
     }
     if (!finished) throw new Error("连接已中断，回复可能不完整，请重新发送。");
   } catch (error) {
+    if (epoch !== generation) return;
     const notice = error.name === "AbortError" ? "已停止生成，已收到的内容保留。" : `本轮未完成：${error.message}`;
     status.textContent = notice;
     reply.textContent += `${reply.textContent ? "\n\n" : ""}${notice}${requestId ? `\n请求编号：${requestId}` : ""}`;
   } finally {
+    if (epoch !== generation) return;
     controller = null;
     unread = panel.hidden;
     setBusy(false);
-    if (!panel.hidden) input.focus();
+    if (!panel.hidden && (!embedded || document.hasFocus())) input.focus();
   }
 });

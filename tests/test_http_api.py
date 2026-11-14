@@ -3,6 +3,8 @@ import asyncio
 import json
 import os
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -29,11 +31,17 @@ async def answer(*args, **kwargs):
 
 class HttpApiTests(unittest.TestCase):
     def setUp(self):
-        env = patch.dict(os.environ, {"AGENT_SESSION_SECRET": SECRET})
+        env = patch.dict(os.environ, {"AGENT_SESSION_SECRET": SECRET, "AGENT_PUBLIC_ORIGIN": "http://testserver", "MALL_BASE_URL": "http://mall.invalid"})
         env.start()
         self.addCleanup(env.stop)
-        self.client = TestClient(http_api.app)
-        self.addCleanup(self.client.close)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        db = patch.object(http_api, "DB_PATH", str(Path(directory.name)/"chat.db"))
+        db.start()
+        self.addCleanup(db.stop)
+        self.client = TestClient(http_api.app, headers={"Origin":"http://testserver"})
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
         self.token = self.client.post("/api/sessions").json()["session_token"]
         self.headers = {"Authorization": "Bearer " + self.token}
 
@@ -171,13 +179,22 @@ class HttpDisconnectTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 closed.set()
 
-        with patch.dict(os.environ, {"AGENT_SESSION_SECRET": SECRET}):
-            with TestClient(http_api.app) as client:
-                token = client.post("/api/sessions").json()["session_token"]
+        with patch.dict(os.environ, {"AGENT_SESSION_SECRET": SECRET, "AGENT_PUBLIC_ORIGIN": "http://testserver", "MALL_BASE_URL": "http://mall.invalid"}):
+            from agent.identity import Identity
+            directory = tempfile.TemporaryDirectory()
+            self.addCleanup(directory.cleanup)
+            store = http_api.SessionStore(Path(directory.name)/"owners.db")
+            await store.open()
+            self.addAsyncCleanup(store.close)
+            http_api.app.state.owners = store
+            http_api.app.state.identity = http_api.IdentityClient()
+            sid = "a" * 32
+            await store.create(sid, Identity("guest"))
+            token = sid + "." + http_api.session_signature(sid, SECRET)
             scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
                      "http_version": "1.1", "method": "POST", "scheme": "http", "path": "/api/chat",
                      "raw_path": b"/api/chat", "query_string": b"", "root_path": "",
-                     "headers": [(b"content-type", b"application/json"), (b"authorization", ("Bearer " + token).encode())],
+                     "headers": [(b"origin", b"http://testserver"), (b"content-type", b"application/json"), (b"authorization", ("Bearer " + token).encode())],
                      "server": ("testserver", 80), "client": ("127.0.0.1", 12345)}
             sent = []
             first = True

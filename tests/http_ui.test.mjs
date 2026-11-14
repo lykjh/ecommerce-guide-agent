@@ -5,9 +5,10 @@ import test from "node:test";
 
 // 只去掉模块导出标记，在最小DOM替身中执行原页面事件处理器。
 const source = readFileSync(new URL("../agent/http_ui/chat.js", import.meta.url), "utf8")
-  .replace("export async function*", "async function*");
+  .replace("export async function*", "async function*")
+  .replaceAll("import.meta.url", JSON.stringify("https://shop.test/assistant/ui/chat.js"));
 
-function page(responses, savedToken = null, { paced = false, reducedMotion = false } = {}) {
+function page(responses, savedToken = null, { paced = false, reducedMotion = false, moduleUrl = "https://shop.test/assistant/ui/chat.js" } = {}) {
   const elements = new Map();
   const storage = new Map(savedToken ? [["xiaonuan-session", savedToken]] : []);
   const requests = [];
@@ -29,8 +30,11 @@ function page(responses, savedToken = null, { paced = false, reducedMotion = fal
     },
     querySelectorAll() { return []; }, createElement: element,
   };
-  runInNewContext(source, { document, TextDecoder, AbortController,
-    window: { matchMedia: () => ({ matches: reducedMotion }) },
+  const window = { parent: {}, handlers: {}, addEventListener(n,f) { this.handlers[n]=f; }, matchMedia: () => ({ matches: reducedMotion }) };
+  const channels = [];
+  class BroadcastChannel { constructor() { this.sent=[]; channels.push(this); } addEventListener(n,f) { this.receive=f; } postMessage(x) { this.sent.push(x); } }
+  runInNewContext(source.replace(JSON.stringify("https://shop.test/assistant/ui/chat.js"), JSON.stringify(moduleUrl)), { document, TextDecoder, AbortController, URL, BroadcastChannel, location: {origin:"https://shop.test"},
+    window,
     setTimeout: callback => {
       if (paced) { ticks.push(callback); onTick(); }
       else callback();
@@ -43,10 +47,11 @@ function page(responses, savedToken = null, { paced = false, reducedMotion = fal
     fetch: async (url, options) => {
       requests.push({ url, options });
       assert.ok(responses.length, "出现未预期的额外请求");
-      return responses.shift();
+      const value = responses.shift();
+      return typeof value === "function" ? value() : value;
     },
   });
-  return { elements, storage, requests, ticks, firstTick,
+  return { elements, storage, requests, ticks, firstTick, window, channels,
     async submit() {
       elements.get("#message").value = "你好";
       await elements.get("#chat-form").handlers.submit({ preventDefault() {} });
@@ -131,3 +136,5 @@ test("窗口收起时不等待打字动画", async () => {
   assert.equal(ui.ticks.length, 0);
   assert.equal(ui.elements.get("#messages").children[1].children[1].textContent, "完整回复");
 });
+
+export { page, json, answerFrames };

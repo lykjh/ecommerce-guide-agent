@@ -15,6 +15,10 @@ __pycache__/
 
 # 运行时产物
 chat_memory.db
+chat_memory.sessions.db
+chat_memory.sessions.db-journal
+chat_memory.sessions.db-wal
+chat_memory.sessions.db-shm
 chroma_db/
 logs/
 data/md5.json

@@ -85,3 +85,7 @@
 @media (max-width: 560px) { .preview-brand { padding: 24px; } .preview-copy { max-width: 85%; margin: 7vh 24px 0; opacity: .65; } .preview h1 { font-size: 48px; } .preview-orbit { left: 15%; } .chat-widget .chat-panel { width: min(400px, calc(100vw - 24px)); right: 12px; bottom: calc(82px + env(safe-area-inset-bottom)); height: min(652px, calc(100dvh - 98px - env(safe-area-inset-bottom))); border-radius: 20px; } .chat-widget .launcher-wrap { right: 12px; bottom: calc(16px + env(safe-area-inset-bottom)); } .chat-widget .chat-header { padding: 15px 16px; } .chat-widget .chat-scroll { padding: 20px 18px 12px; } .chat-widget .launcher-notice { max-width: 160px; } }
 @media (max-height: 600px) { .chat-widget .chat-header { padding-top: 10px; padding-bottom: 10px; } .chat-widget .composer-wrap { padding-top: 8px; padding-bottom: 6px; } .chat-widget textarea { height: 36px; min-height: 36px; } .chat-widget .chat-status { margin-top: 4px; } .chat-widget .chat-panel { bottom: 78px; height: calc(100dvh - 90px); } .chat-widget .launcher-wrap { bottom: 12px; } }
 @media (prefers-reduced-motion: reduce) { .chat-widget *, .chat-widget *::before, .chat-widget *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+.embedded { background: transparent; }
+.embedded .preview, .embedded .launcher-wrap { display: none; }
+.embedded .chat-panel { position: absolute; inset: 0; width: 100%; height: 100%; box-shadow: none; }
