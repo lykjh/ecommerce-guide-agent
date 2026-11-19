@@ -5,11 +5,17 @@ import os
 import unittest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from langchain_core.messages import AIMessage
 from agent import http_api, main_agent
+from agent.identity import Identity
+from agent.tool.orders import OrderAuthExpired, OrderDetail
+from agent.tool.schemas import CandidateRef, FilterParams, ProductResolution
+from tests.check_runtime_boundaries import app
+from tests.mall_fixtures import detail, selection
 
 
 SECRET = "http-test-session-secret-32-characters-minimum"
@@ -75,7 +81,7 @@ class HttpApiTests(unittest.TestCase):
             response = self.client.post("/api/chat", headers=self.headers, json={"message": "推荐耳机"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/event-stream", response.headers["content-type"])
-        self.assertEqual(response.headers["cache-control"], "no-cache")
+        self.assertEqual(response.headers["cache-control"], "no-cache, no-store")
         self.assertEqual(response.headers["x-accel-buffering"], "no")
         frames = events(response.text)
         self.assertEqual([name for name, _ in frames], ["meta", "delta", "delta", "done"])
@@ -87,6 +93,75 @@ class HttpApiTests(unittest.TestCase):
         args, kwargs = stream.call_args
         self.assertEqual(args[:2], ("推荐耳机", self.token.split(".")[0]))
         self.assertEqual(kwargs.get("request_id", args[2] if len(args) > 2 else None), request_id)
+
+    def test_product_links_use_current_verified_results_and_opt_in(self):
+        items = [detail(9007199254740993), detail(102)]
+        router = AsyncMock()
+        router.ainvoke.side_effect = [
+            AIMessage(content=json.dumps({"intent": intent, "subjects": subjects, "needs_clarification": False}))
+            for intent, subjects in (
+                ("商品推荐", []), ("业务咨询", ["未知耳机"]),
+                ("商品推荐", []), ("商品推荐", []),
+            )
+        ]
+        with app(http_api.DB_PATH) as (main, _, products), patch.object(main.router, "client", router), \
+                patch("agent.nodes.recommend.invoke_model", new_callable=AsyncMock,
+                      return_value=FilterParams(category="耳机")) as extract:
+            products.find_products.side_effect = [
+                selection(items[0], has_more=True, cursor="next-page"),
+                selection(items[1]), selection(), selection(items[1]),
+            ]
+            products.resolve_product.return_value = ProductResolution(status="choose", candidates=[
+                CandidateRef(product_id=102, name=items[1].name),
+            ])
+            for message, item, opt_in in (
+                ("推荐耳机", items[0], True), ("下一批", items[1], True),
+                ("未知耳机有货吗", None, True), ("推荐耳机", None, True),
+                ("推荐耳机", None, False),
+            ):
+                with self.subTest(message=message, opt_in=opt_in):
+                    suffix = "?product_links=1" if opt_in else ""
+                    response = self.client.post("/api/chat" + suffix, headers=self.headers, json={"message": message})
+                    self.assertEqual(response.status_code, 200)
+                    frames = events(response.text)
+                    done = {"request_id": frames[0][1]["request_id"]}
+                    if item is not None:
+                        done["product_links"] = [{"product_id": str(item.id), "name": item.name}]
+                    self.assertEqual(frames[-1], ("done", done))
+            self.assertEqual(products.find_products.await_count, 4)
+            self.assertEqual(products.find_products.await_args_list[1].args[0].cursor, "next-page")
+            self.assertEqual(extract.await_count, 3)
+
+    def test_private_order_response_bypasses_graph_and_rechecks_identity(self):
+        owner = Identity("user", "701", "a" * 64)
+        detail = OrderDetail(id=70103, shopName="本人的店铺", status="PAID",
+                             totalAmount="32.25", pointUnits=0, items=[])
+        with patch.object(http_api.app.state.identity, "resolve", new_callable=AsyncMock, return_value=owner):
+            self.client.cookies.set("MALLAUTH", "fixture-cookie")
+            response = self.client.post("/api/sessions")
+            self.assertEqual(response.status_code, 201)
+            headers = {"Authorization": "Bearer " + response.json()["session_token"]}
+            with patch.object(main_agent, "_get_ai_stream") as graph, \
+                    patch("agent.nodes.orders.order_detail", new_callable=AsyncMock, return_value=detail):
+                response = self.client.post("/api/chat", headers=headers, json={"message": "订单 70103"})
+                frames = events(response.text)
+                self.assertIn("本人的店铺", frames[1][1]["text"])
+                self.assertEqual(frames[-1][0], "done")
+                graph.assert_not_called()
+            with patch.object(main_agent, "_get_ai_stream") as graph, \
+                    patch("agent.nodes.orders.order_parcels", new_callable=AsyncMock, return_value=[]) as parcels:
+                for message in ("订单70103现在发货了吗？", "这单的物流"):
+                    response = self.client.post("/api/chat", headers=headers, json={"message": message})
+                    self.assertIn("暂无包裹信息", events(response.text)[1][1]["text"])
+                self.assertEqual([call.args[1] for call in parcels.await_args_list], [70103, 70103])
+                graph.assert_not_called()
+            with patch.object(main_agent, "_get_ai_stream") as graph, \
+                    patch("agent.nodes.orders.order_detail", new_callable=AsyncMock, side_effect=OrderAuthExpired):
+                response = self.client.post("/api/chat", headers=headers, json={"message": "订单 70103"})
+                frames = events(response.text)
+                self.assertEqual([event for event, _ in frames], ["meta", "error"])
+                self.assertEqual(frames[-1][1]["code"], "ORDER_AUTH_EXPIRED")
+                graph.assert_not_called()
 
     def test_session_isolation_and_resume(self):
         another = self.client.post("/api/sessions").json()["session_token"]

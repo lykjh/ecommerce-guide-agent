@@ -8,7 +8,7 @@ class HttpUiTests(unittest.TestCase):
     def test_page_event_handlers(self):
         root = Path(__file__).resolve().parents[1]
         result = subprocess.run(
-            ["node", str(root / "tests/http_ui.test.mjs")], cwd=root,
+            ["node", str(root / "tests/development/identity_session/identity_ui.test.mjs")], cwd=root,
             capture_output=True, text=True, encoding="utf-8", timeout=20,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -8,22 +8,26 @@ const source = readFileSync(new URL("../agent/http_ui/chat.js", import.meta.url)
   .replace("export async function*", "async function*")
   .replaceAll("import.meta.url", JSON.stringify("https://shop.test/assistant/ui/chat.js"));
 
-function page(responses, savedToken = null, { paced = false, reducedMotion = false, moduleUrl = "https://shop.test/assistant/ui/chat.js" } = {}) {
+function page(responses, savedToken = null, { paced = false, reducedMotion = false, embedded = false, parentOrigin = "https://shop.test", moduleUrl = "https://shop.test/assistant/ui/chat.js" } = {}) {
   const elements = new Map();
   const storage = new Map(savedToken ? [["xiaonuan-session", savedToken]] : []);
   const requests = [];
   const ticks = [];
   let onTick;
   const firstTick = new Promise(resolve => { onTick = resolve; });
-  function element() {
-    return { value: "", textContent: "", hidden: false, children: [], handlers: {},
+  function element(tagName) {
+    return { tagName, value: "", textContent: "", hidden: false, children: [], handlers: {},
       addEventListener(name, handler) { this.handlers[name] = handler; },
-      setAttribute() {}, focus() {},
-      append(...children) { this.children.push(...children); },
+      attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, focus() {},
+      append(...children) {
+        for (const child of children) child.parentElement = this;
+        this.children.push(...children);
+      },
       replaceChildren() { this.children = []; },
     };
   }
   const document = {
+    body: { classList: { add() {} } }, hasFocus: () => true,
     querySelector(selector) {
       if (!elements.has(selector)) elements.set(selector, element());
       return elements.get(selector);
@@ -31,9 +35,10 @@ function page(responses, savedToken = null, { paced = false, reducedMotion = fal
     querySelectorAll() { return []; }, createElement: element,
   };
   const window = { parent: {}, handlers: {}, addEventListener(n,f) { this.handlers[n]=f; }, matchMedia: () => ({ matches: reducedMotion }) };
+  if (embedded) window.parent = { location: { origin: parentOrigin }, postMessage() {} };
   const channels = [];
   class BroadcastChannel { constructor() { this.sent=[]; channels.push(this); } addEventListener(n,f) { this.receive=f; } postMessage(x) { this.sent.push(x); } }
-  runInNewContext(source.replace(JSON.stringify("https://shop.test/assistant/ui/chat.js"), JSON.stringify(moduleUrl)), { document, TextDecoder, AbortController, URL, BroadcastChannel, location: {origin:"https://shop.test"},
+  runInNewContext(source.replace(JSON.stringify("https://shop.test/assistant/ui/chat.js"), JSON.stringify(moduleUrl)), { document, TextDecoder, AbortController, URL, BroadcastChannel, location: { origin: "https://shop.test", search: embedded ? "?embed=1" : "" },
     window,
     setTimeout: callback => {
       if (paced) { ticks.push(callback); onTick(); }
@@ -100,9 +105,9 @@ test("正常创建会话及SSE回复不受影响", async () => {
   assert.equal(ui.requests[1].options.headers.Authorization, "Bearer new-token");
 });
 
-const answerFrames = text => 'event: meta\ndata: {"request_id":"typing-test"}\n\n'
+const answerFrames = (text, done = {}) => 'event: meta\ndata: {"request_id":"typing-test"}\n\n'
   + `event: delta\ndata: ${JSON.stringify({ text })}\n\n`
-  + 'event: done\ndata: {"request_id":"typing-test"}\n\n';
+  + `event: done\ndata: ${JSON.stringify({ request_id: "typing-test", ...done })}\n\n`;
 
 test("合并到达的回复也逐步显示，停止保留已显示部分", async () => {
   const ui = page([new Response(answerFrames("你好🙂这是审核后的完整回复"))], "test-token", { paced: true });
@@ -135,6 +140,74 @@ test("窗口收起时不等待打字动画", async () => {
   await ui.submit();
   assert.equal(ui.ticks.length, 0);
   assert.equal(ui.elements.get("#messages").children[1].children[1].textContent, "完整回复");
+});
+
+test("商城浮窗只从本轮可信商品引用创建同源链接", async () => {
+  const text = "[伪链接](https://example.test/) <a>测试</a>";
+  const products = [
+    { product_id: "9007199254740993", name: "<b>耳机</b>" },
+    { product_id: "102", name: "耳机乙" },
+    { product_id: "102", name: "重复" },
+    { product_id: "//example.test", name: "站外" },
+    { product_id: "103\n", name: "非法编号" },
+  ];
+  const ui = page([new Response(answerFrames(text, { product_links: products }))], "test-token", { embedded: true });
+  await ui.submit();
+  assert.equal(ui.requests[0].url.href, "https://shop.test/assistant/api/chat?product_links=1");
+  const [, reply, group] = ui.elements.get("#messages").children[1].children;
+  assert.equal(reply.textContent, "伪链接（https://example.test/） <a>测试</a>");
+  assert.deepEqual(group.children.map(link => link.href), [
+    "https://shop.test/product/9007199254740993", "https://shop.test/product/102",
+  ]);
+  assert.equal(group.children[0].textContent, "<b>耳机</b>");
+  assert.equal(group.children[0].target, "_blank");
+  assert.equal(group.children[0].rel, "noopener noreferrer");
+});
+
+test("独立页、跨域宿主和旧回包均不会渲染商品链接", async () => {
+  const products = [{ product_id: "102", name: "耳机乙" }];
+  for (const [settings, done] of [
+    [{}, { product_links: products }],
+    [{ embedded: true, parentOrigin: "https://other.test" }, { product_links: products }],
+    [{ embedded: true }, { request_id: "old-request", product_links: products }],
+    [{ embedded: true }, {}],
+  ]) {
+    const ui = page([new Response(answerFrames("仍然显示文字", done))], "test-token", settings);
+    await ui.submit();
+    const article = ui.elements.get("#messages").children[1];
+    assert.equal(article.children.length, 2);
+    assert.equal(article.children[1].textContent, "仍然显示文字");
+    assert.equal(ui.elements.get("#status").textContent, "本轮回复结束");
+  }
+});
+
+test("商城浮窗停止或换号后不显示同批收到的商品链接", async () => {
+  for (const action of ["stop", "identity"]) {
+    const product_links = [{ product_id: "102", name: "耳机乙" }];
+    const ui = page([new Response(answerFrames("已经收到一段文字", { product_links }))], "test-token",
+      { embedded: true, paced: true });
+    ui.window.handlers.message({ origin: "https://shop.test", source: ui.window.parent,
+      data: { type: "mall:assistant-visibility", version: 1, open: true } });
+    const submitted = ui.submit();
+    await ui.firstTick;
+    const article = ui.elements.get("#messages").children[1];
+    if (action === "stop") ui.elements.get("#stop").handlers.click();
+    else ui.channels[0].receive({ data: { type: "mall:identity-changed", version: 1 } });
+    ui.ticks.shift()();
+    await submitted;
+    assert.equal(article.children.length, 2);
+    if (action === "identity") assert.equal(ui.elements.get("#messages").children.length, 0);
+  }
+});
+
+test("商城登录失效时丢弃订单内容和旧会话", async () => {
+  const frames = 'event: meta\ndata: {"request_id":"expired"}\n\n'
+    + 'event: error\ndata: {"request_id":"expired","code":"ORDER_AUTH_EXPIRED","message":"商城登录已失效"}\n\n';
+  const ui = page([new Response(frames)], "test-token");
+  await ui.submit();
+  assert.equal(ui.storage.has("xiaonuan-session"), false);
+  assert.equal(ui.elements.get("#messages").children.length, 0);
+  assert.equal(ui.elements.get("#status").textContent, "商城登录已失效");
 });
 
 export { page, json, answerFrames };

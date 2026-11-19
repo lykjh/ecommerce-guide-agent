@@ -56,6 +56,15 @@ let unread = false;
 let generation = 0;
 const appRoot = new URL("../", import.meta.url);
 const embedded = window.parent !== window && location.search === "?embed=1";
+const productLinksEnabled = embedded && sameOriginHost();
+
+function sameOriginHost() {
+  try {
+    return window.parent.location.origin === location.origin;
+  } catch {
+    return false;
+  }
+}
 
 function notifyHost(type, fields = {}) {
   window.parent.postMessage({ type, version: 1, ...fields }, location.origin);
@@ -115,6 +124,21 @@ function setBusy(busy) {
   updateLauncher();
 }
 
+function formatReply(text) {
+  // Plain text only: never interpret model output as HTML.
+  return text.replace(/\*\*|__|`{1,3}/g, "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "• ")
+    .replace(/^>\s?/gm, "")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1（$2）")
+    .split("\n")
+    .filter(line => !/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line))
+    .map(line => /^\s*\|.*\|\s*$/.test(line)
+      ? line.trim().slice(1, -1).split("|").map(cell => cell.trim()).join("：")
+      : line)
+    .join("\n");
+}
+
 function addMessage(role, text) {
   const article = document.createElement("article");
   article.className = `message ${role}`;
@@ -123,12 +147,39 @@ function addMessage(role, text) {
   label.textContent = role === "user" ? "你" : "小暖";
   const content = document.createElement("p");
   content.className = "message-content";
-  content.textContent = text;
+  content.textContent = role === "user" ? text : formatReply(text);
   article.append(label, content);
   messages.append(article);
   welcome.hidden = true;
   chatScroll.scrollTop = chatScroll.scrollHeight;
   return content;
+}
+
+function appendProductLinks(reply, products) {
+  if (!Array.isArray(products)) return;
+  const valid = new Map();
+  for (const product of products.slice(0, 8)) {
+    const id = product?.product_id;
+    const name = product?.name;
+    if (typeof id === "string" && /^[1-9][0-9]{0,18}$/.test(id) && id === id.trim() &&
+        typeof name === "string" && name.trim() && !valid.has(id)) {
+      valid.set(id, name);
+    }
+  }
+  if (!valid.size) return;
+  const group = document.createElement("div");
+  group.className = "product-links";
+  for (const [id, name] of valid) {
+    const link = document.createElement("a");
+    link.href = new URL(`/product/${id}`, location.origin).href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = valid.size === 1 ? "查看商品" : name;
+    link.setAttribute("aria-label", `查看商品：${name}（在新标签页打开）`);
+    group.append(link);
+  }
+  reply.parentElement.append(group);
+  chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
 function responseError(result, statusCode) {
@@ -239,6 +290,7 @@ form.addEventListener("submit", async (event) => {
   setBusy(true);
   addMessage("user", message);
   const reply = addMessage("assistant", "");
+  let replyText = "";
   input.value = "";
   status.textContent = "正在连接客服…";
   let requestId = "";
@@ -247,7 +299,9 @@ form.addEventListener("submit", async (event) => {
     if (!token) await createSession(requestController.signal, epoch);
     if (epoch !== generation) return;
     requestController.signal.throwIfAborted();
-    const response = await fetch(new URL("api/chat", appRoot), {
+    const chatUrl = new URL("api/chat", appRoot);
+    if (productLinksEnabled) chatUrl.searchParams.set("product_links", "1");
+    const response = await fetch(chatUrl, {
       credentials: "same-origin",
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -280,7 +334,8 @@ form.addEventListener("submit", async (event) => {
           for (let i = 0; i < characters.length; i += 2) {
             if (epoch !== generation) return;
             requestController.signal.throwIfAborted();
-            reply.textContent += characters.slice(i, i + 2).join("");
+            replyText += characters.slice(i, i + 2).join("");
+            reply.textContent = formatReply(replyText);
             chatScroll.scrollTop = chatScroll.scrollHeight;
             if (!document.hidden && !panel.hidden && !reducedMotion.matches) {
               await new Promise(resolve => setTimeout(resolve, 20));
@@ -288,8 +343,16 @@ form.addEventListener("submit", async (event) => {
           }
           break;
         case "error":
+          if (data.code === "ORDER_AUTH_EXPIRED" && requestId && data.request_id === requestId) {
+            resetSession(data.message);
+            if (embedded) notifyHost("assistant:identity-invalidated");
+            return;
+          }
           throw new Error(data.message);
         case "done":
+          if (productLinksEnabled && requestId && data.request_id === requestId) {
+            appendProductLinks(reply, data.product_links);
+          }
           finished = true;
           status.textContent = "本轮回复结束";
           break;

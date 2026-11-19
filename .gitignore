@@ -35,5 +35,4 @@ data/md5.json
 # Required input for tests/live_router_boundary.py --repeat-failures.
 !/docs/09-验收与交付/证据/专项测试/router-boundary-live-result-before-fix.json
 /docs/05-施工进度/任务单/*
-!/docs/05-施工进度/任务单/开发与审查测试交付要求.md
 /docs/07-项目周报/

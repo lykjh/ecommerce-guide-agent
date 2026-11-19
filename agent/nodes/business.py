@@ -1,6 +1,6 @@
 """商品咨询：先确认商城商品，再解释本次详情。"""
 from pydantic import ValidationError
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from agent.budget import invoke_model
 from agent.deps import get_client
 from agent.memory import memory_manager
@@ -21,7 +21,7 @@ async def business_node(state: AgentState):
         reply = mall_error_reply(exc.kind, exc.http_status, exc.code)
         return {"messages": [AIMessage(content=reply)], "final_reply": reply}
     if result.status != "resolved":
-        reply = "暂未查到这款商品，请提供商品编号或完整名称。"
+        reply = "未查到该商品，请核对商品编号或完整名称；本次无法确认其价格和可售状态。"
         if result.status == "choose":
             reply = "请确认具体商品，回复商品编号：\n" + "\n".join(
                 f"- {item.name}（商品编号 {item.product_id}）" for item in result.candidates)
@@ -35,6 +35,7 @@ async def business_node(state: AgentState):
                   "args": {"product_id": product.id}, "id": "business_product_detail", "type": "tool_call"}]),
         ToolMessage(content=product.model_dump_json(), tool_call_id="business_product_detail",
                     name="get_product_detail"),
+        HumanMessage(content="仅回答本轮问题，不补答历史未完成或已取消的任务：\n" + state["messages"][-1].content),
     ])
     response = await invoke_model(get_client(), messages, purpose="answer")
     return {"messages": [response], "final_reply": response.content,

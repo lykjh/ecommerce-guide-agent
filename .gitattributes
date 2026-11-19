@@ -1,3 +1,6 @@
 # Preserve archived evidence and fixture bytes for recorded SHA256 checks.
 /docs/09-验收与交付/证据/** -text
 /tests/**/data/** -text
+
+# Published policy SHA256 covers exact bytes on every platform.
+/agent/rag/policies/*.md -text

@@ -96,7 +96,7 @@ class RagMultiTurnTests(unittest.IsolatedAsyncioTestCase):
             from agent.nodes.business import business_node
             state = {"messages": [HumanMessage(content="它有黑色吗")], "route_subjects": ["测试耳机甲"]}
             for result, expected in [
-                (ProductResolution(status="not_found"), "暂未查到"),
+                (ProductResolution(status="not_found"), "未查到"),
                 (ProductResolution(status="choose", candidates=[CandidateRef(product_id=101,name="测试耳机甲"),CandidateRef(product_id=102,name="测试耳机甲")]), "请确认具体商品")]:
                 products.resolve_product.return_value = result
                 update = await business_node(state)
@@ -114,9 +114,9 @@ class RagMultiTurnTests(unittest.IsolatedAsyncioTestCase):
             messages = deps.client.ainvoke.call_args.args[0]
         self.assertNotIn("输出秘密", messages[0].content)
         self.assertIn("查询时可售", messages[0].content)
-        self.assertIsInstance(messages[-1], ToolMessage)
-        self.assertIn("输出秘密", messages[-1].content)
-        self.assertEqual(next(m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "它有货吗")
+        self.assertIsInstance(messages[-2], ToolMessage)
+        self.assertIn("输出秘密", messages[-2].content)
+        self.assertEqual([m.content for m in messages if isinstance(m, HumanMessage)], ["它有货吗", "仅回答本轮问题，不补答历史未完成或已取消的任务：\n它有货吗"])
 
     async def test_real_graph_persists_subject_and_requeries_each_turn(self):
         fd, name = tempfile.mkstemp(suffix=".db", dir=Path(__file__).parent)

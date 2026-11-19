@@ -56,6 +56,9 @@
 .chat-widget .user .message-label { text-align: right; margin-right: 2px; }
 .chat-widget .user .message-content { margin-left: auto; background: #7366b7; color: #fff; border-radius: 14px 3px 14px 14px; }
 .chat-widget .assistant .message-content:empty::after { content: "正在想一想…"; color: #9d95ae; font-size: 12px; }
+.chat-widget .product-links { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; }
+.chat-widget .product-links a { color: #51418c; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.chat-widget .product-links a:focus-visible { outline: 2px solid #7366b7; outline-offset: 3px; }
 .chat-widget .composer-wrap { flex-shrink: 0; padding: 12px 16px 9px; border-top: 1px solid #f1eff5; background: #fff; }
 .chat-widget .composer { padding: 11px 12px 9px; background: #faf9fc; border: 1px solid #e9e5f0; border-radius: 14px; transition: border-color .15s, box-shadow .15s; }
 .chat-widget .composer:focus-within { border-color: #beb1dd; box-shadow: 0 0 0 3px #a998d30a; }

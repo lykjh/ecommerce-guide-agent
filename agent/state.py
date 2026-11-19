@@ -12,6 +12,7 @@ class AgentState(TypedDict):
     route_subjects: list[str]
     task_context: dict
     candidate_products: list[dict]
+    comparison_products: list[dict]
     product_page: dict
     category_context: dict
     category_action: dict

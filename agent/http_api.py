@@ -25,7 +25,9 @@ from agent.utils.log_tool import get_loger, set_session_id
 
 from agent.deps import DB_PATH
 from agent.identity import MALL_AUTH_COOKIE, IdentityClient, IdentityError, validate_url
+from agent.nodes.orders import OrderTurns
 from agent.session_store import SessionStore, SessionStoreError
+from agent.tool.orders import OrderAccess, OrderAuthExpired
 
 
 @asynccontextmanager
@@ -43,6 +45,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="电商客服 Agent", version="1.1.0", lifespan=lifespan)
+order_turns = OrderTurns()
 logger = get_loger("agent.http")
 ui_path = Path(__file__).with_name("http_ui")
 app.mount("/ui", StaticFiles(directory=ui_path, check_dir=False), name="ui")
@@ -171,8 +174,9 @@ async def owned_session(request: Request, session_id: str):
             reject('INVALID_SESSION')
         current = await current_identity(request, 'chat')
         if current != owner:
+            order_turns.sessions.pop(session_id, None)
             reject('SESSION_IDENTITY_CHANGED')
-        return session_id
+        return current
     except SessionStoreError:
         code = 'SESSION_STORE_UNAVAILABLE'
         reject(code)
@@ -266,8 +270,10 @@ async def create_session(request: Request):
     },
 )
 async def chat(request: Request, body: ChatRequest, session_id: Annotated[str, Depends(authenticated_session)]):
-    await owned_session(request, session_id)
+    owner = await owned_session(request, session_id)
     request_id = request.state.request_id
+    access = OrderAccess(owner, request.state.mall_base, request.cookies.get(MALL_AUTH_COOKIE),
+                         request.state.secret, request.app.state.identity)
 
     async def events():
         set_session_id(session_id)
@@ -276,11 +282,21 @@ async def chat(request: Request, body: ChatRequest, session_id: Annotated[str, D
         logger.info("http_start request_id=%s", request_id)
         try:
             yield event("meta", {"request_id": request_id})
-            async with aclosing(stream_reply(body.message, session_id, request_id=request_id)) as stream:
+            options = {"product_links": []} if request.query_params.get("product_links") == "1" else {}
+            async with aclosing(stream_reply(body.message, session_id, request_id=request_id,
+                               order_handler=lambda: order_turns.handle(body.message, session_id, access),
+                               **options)) as stream:
                 async for text in stream:
                     yield event("delta", {"text": text})
             outcome = "completed"
-            yield event("done", {"request_id": request_id})
+            done = {"request_id": request_id}
+            if options.get("product_links"):
+                done["product_links"] = options["product_links"]
+            yield event("done", done)
+        except OrderAuthExpired:
+            outcome = "error"
+            yield event("error", {"code": "ORDER_AUTH_EXPIRED", "message": "商城登录已失效，请重新登录后查询。",
+                                  "request_id": request_id})
         except Exception as exc:
             # HTTP 框架出口统一转换未知错误，取消不属于 Exception，必须原样传播。
             outcome = "error"
@@ -293,4 +309,4 @@ async def chat(request: Request, body: ChatRequest, session_id: Annotated[str, D
                         (monotonic() - started) * 1000)
 
     return ChatStreamResponse(events(), media_type="text/event-stream",
-                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                              headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})

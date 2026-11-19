@@ -48,6 +48,7 @@ class OfflineModel(BaseChatModel):
             content = marker + "的历史摘要：只保留本人商品需求。"
         else:
             latest = next(message.content for message in reversed(messages) if isinstance(message, HumanMessage))
+            latest = latest.removeprefix("仅回答本轮问题，不补答历史未完成或已取消的任务：\n")
             if "CANCEL" in latest:
                 self.control["entered"].set()
                 try:

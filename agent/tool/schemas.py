@@ -7,6 +7,7 @@ Money = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 Identifier = Annotated[int, Field(gt=0, strict=True)]
 
 class FilterParams(BaseModel):
+    scope: Literal["catalog", "candidates", "comparison"] = Field(default="catalog", description="catalog搜索商城；candidates只筛最近候选；comparison只筛上次对比对象。用户限制原集合时不得搜索商城")
     category: Optional[str] = Field(default=None, max_length=80, description="商品品类；结合现有条件，用户取消时填JSON null")
     min_price: Optional[Money] = Field(default=None, description="最低价格；用户取消时填JSON null")
     max_price: Optional[Money] = Field(default=None, description="最高价格；用户取消时填JSON null")

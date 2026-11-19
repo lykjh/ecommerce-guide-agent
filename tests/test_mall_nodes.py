@@ -87,7 +87,7 @@ class MallNodeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["task_context"]["filters"]["max_price"], "500")
 
     async def test_next_page_reuses_cursor_only_for_same_conditions(self):
-        previous = {"filters": {"category": "耳机", "min_price": None, "max_price": "300", "color": "黑色", "unsupported_specs": []},
+        previous = {"filters": {"scope": "catalog", "category": "耳机", "min_price": None, "max_price": "300", "color": "黑色", "unsupported_specs": []},
                     "mode": "search", "category_id": None, "hasMore": True, "nextCursor": "opaque-old"}
         for budget, expected in (("300.00", "opaque-old"), ("500", None)):
             with self.subTest(budget=budget), app(":memory:") as (_, _, products), patch(
@@ -97,7 +97,7 @@ class MallNodeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(products.find_products.await_args.args[0].cursor, expected)
 
     async def test_exhausted_page_does_not_query(self):
-        filters = {"category": "耳机", "min_price": None, "max_price": "300", "color": None, "unsupported_specs": []}
+        filters = {"scope": "catalog", "category": "耳机", "min_price": None, "max_price": "300", "color": None, "unsupported_specs": []}
         with app(":memory:") as (_, _, products), patch("agent.nodes.recommend.invoke_model", new_callable=AsyncMock,
                 return_value=FilterParams(category="耳机", max_price="300", next_page=True)):
             result = await recommend_node({"messages": [HumanMessage(content="下一批")],
@@ -160,7 +160,7 @@ class MallNodeTests(unittest.IsolatedAsyncioTestCase):
             deps.client.ainvoke.assert_not_called()
             self.assertEqual(products.resolve_product.await_count, 2)
             self.assertIn("耳机乙", result["final_reply"])
-            self.assertIn("尚未确认", result["final_reply"])
+            self.assertIn("未查到", result["final_reply"])
 
     async def test_trusted_candidate_uses_id_and_requeries_details(self):
         with app(":memory:") as (_, deps, _), patch("agent.nodes.business.resolve_product", side_effect=real_resolve_product), \

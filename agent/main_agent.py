@@ -1,6 +1,7 @@
 """图装配与输出：意图节点写入分类，条件边按 router.ROUTE_MAP 分流。"""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import aclosing, suppress
 import threading
 from uuid import uuid4
@@ -49,6 +50,26 @@ _checkpoint_locks: WeakValueDictionary = WeakValueDictionary()
 
 BUSINESS_NODES = (business_node, chat_node, total_node, compare_shop_node, recommend_node, route_reply_node)
 VISIBLE_NODES = tuple(node.__name__ for node in BUSINESS_NODES)
+PRODUCT_LINK_INTENTS = {
+    "business_node": "业务咨询",
+    "compare_shop_node": "商品对比",
+    "recommend_node": "商品推荐",
+    "total_node": "概览筛选",
+}
+
+
+def _product_links(node_name: str, update: dict) -> list[dict[str, str]]:
+    intent = PRODUCT_LINK_INTENTS.get(node_name)
+    if intent is None or (update.get("task_context") or {}).get("intent") != intent:
+        return []
+    links = {}
+    for candidate in update.get("candidate_products") or ():
+        product_id, name = candidate.get("product_id"), candidate.get("name")
+        if type(product_id) is int and 0 < product_id < 10**19 and isinstance(name, str) and name.strip():
+            links.setdefault(product_id, {"product_id": str(product_id), "name": name})
+        if len(links) == 8:
+            break
+    return list(links.values())
 
 
 def should_recommend(state) -> str:
@@ -115,7 +136,9 @@ async def get_ai_stream(user_input: str, thread_id: str = "default"):
             yield chunk
 
 
-async def stream_reply(user_input: str, thread_id: str, request_id: str | None = None):
+async def stream_reply(user_input: str, thread_id: str, request_id: str | None = None, *,
+                       product_links: list[dict[str, str]] | None = None,
+                       order_handler: Callable[[], Awaitable[str | None]] | None = None):
     """消费入口已校验的参数；HTTP 和脚本入口共用会话互斥与流关闭逻辑。"""
     with _session_guard:
         busy = thread_id in _active_sessions
@@ -125,7 +148,25 @@ async def stream_reply(user_input: str, thread_id: str, request_id: str | None =
         yield SESSION_BUSY_REPLY
         return
     try:
-        async with aclosing(_get_ai_stream(user_input, thread_id, request_id)) as stream:
+        if order_handler is not None:
+            budget = TurnBudget(request_id or uuid4().hex)
+            with budget_scope(budget):
+                try:
+                    async with asyncio.timeout_at(budget.deadline):
+                        reply = await order_handler()
+                except (BudgetStop, TimeoutError) as exc:
+                    budget.stop(exc.reason if isinstance(exc, BudgetStop) else "deadline")
+                    reply = "商城订单服务暂不可查询，请稍后再试。"
+                except asyncio.CancelledError:
+                    budget.stop("cancelled")
+                    raise
+                finally:
+                    if budget.queries or budget.stopped:
+                        budget.finish()
+            if reply is not None:
+                yield reply
+                return
+        async with aclosing(_get_ai_stream(user_input, thread_id, request_id, product_links)) as stream:
             async for chunk in stream:
                 yield chunk
     finally:
@@ -133,7 +174,8 @@ async def stream_reply(user_input: str, thread_id: str, request_id: str | None =
             _active_sessions.remove(thread_id)
 
 
-async def _get_ai_stream(user_input: str, thread_id: str, request_id: str | None = None):
+async def _get_ai_stream(user_input: str, thread_id: str, request_id: str | None = None,
+                         product_links: list[dict[str, str]] | None = None):
     #把会话 id 绑到日志上下文：之后 router / 节点 / retriever 打的所有日志都会带上它，
     #排查某轮对话时直接 grep 这个 id 就能拉出完整链路，不用再拿时间戳去对齐几个文件。
     set_session_id(thread_id)
@@ -145,10 +187,12 @@ async def _get_ai_stream(user_input: str, thread_id: str, request_id: str | None
         with budget_scope(budget):
             try:
                 async with asyncio.timeout_at(budget.deadline):
-                    async with aclosing(_stream_graph(user_input, thread_id, usage)) as stream:
+                    async with aclosing(_stream_graph(user_input, thread_id, usage, product_links)) as stream:
                         async for chunk in stream:
                             await queue.put(chunk)
             except (BudgetStop, TimeoutError) as exc:
+                if product_links is not None:
+                    product_links.clear()
                 budget.stop(exc.reason if isinstance(exc, BudgetStop) else "deadline")
                 await queue.put("\n\n" + BUDGET_REPLY)
             except asyncio.CancelledError:
@@ -176,7 +220,8 @@ async def _get_ai_stream(user_input: str, thread_id: str, request_id: str | None
             await producer
 
 
-async def _stream_graph(user_input: str, thread_id: str, usage: TurnUsage):
+async def _stream_graph(user_input: str, thread_id: str, usage: TurnUsage,
+                        product_links: list[dict[str, str]] | None = None):
     config = {"configurable": {"thread_id": thread_id}, "callbacks": [usage]}
     logger.info("turn_start request_id=%s input_chars=%d", usage.request_id, len(user_input))
 
@@ -190,6 +235,7 @@ async def _stream_graph(user_input: str, thread_id: str, usage: TurnUsage):
         #本轮节点交出的定稿内容（chat/recommend 走防幻觉守卫，生成过程不可见，
         #只能等节点结束后从它的返回值里拿）
         final_reply = ""
+        links = []
 
         #🔴 为什么同时订阅 messages 和 updates 两种模式：
         #messages 用来把「边生成边输出」的 token 实时流出去（打字机效果）；
@@ -228,6 +274,8 @@ async def _stream_graph(user_input: str, thread_id: str, usage: TurnUsage):
                         continue
                     if update.get("final_reply"):
                         final_reply = update["final_reply"]
+                        if product_links is not None:
+                            links = _product_links(node_name, update)
 
         #3) 没有流式输出（节点返回的是定稿消息）时，用节点交出的定稿切片吐出
         if not emitted:
@@ -244,6 +292,8 @@ async def _stream_graph(user_input: str, thread_id: str, usage: TurnUsage):
                     "节点也没交出 final_reply。已用兜底话术顶上"
                 )
                 yield OUTPUT_FALLBACK
+        if product_links is not None:
+            product_links.extend(links)
 
 
 if __name__ == "__main__":

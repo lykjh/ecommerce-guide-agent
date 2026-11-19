@@ -17,6 +17,7 @@ def build_client(model_key, temperature, *, max_tokens=1200, **kwargs):
         api_key=os.getenv(APP_CFG.get("llm.api_key_env", "OPENAI_API_KEY")),
         base_url=os.getenv(APP_CFG.get("llm.base_url_env")),
         temperature=temperature, max_tokens=max_tokens, max_retries=0, timeout=10,
+        stream_usage=True,
         extra_body=APP_CFG.get("llm.extra_body", {}), **kwargs,
     )
 

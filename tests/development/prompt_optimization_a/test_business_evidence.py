@@ -19,12 +19,12 @@ class BusinessEvidenceTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(business, 'resolve_product', resolve), patch.object(business, 'invoke_model', invoke), patch.object(business, 'get_client'):
                     result = await business.business_node({'messages':[query], 'route_subjects':['101']})
                 sent = invoke.await_args.args[1]
-                tool = sent[-1]
+                tool = sent[-2]
                 self.assertIsInstance(tool, ToolMessage)
                 self.assertEqual(json.loads(tool.content), json.loads(detail.model_dump_json()))
-                self.assertEqual(sent[-2].tool_calls[0]['id'], tool.tool_call_id)
-                self.assertEqual(sent[-2].tool_calls[0]['args'], {'product_id':101})
-                self.assertEqual([m.content for m in sent if isinstance(m,HumanMessage)], [query.content])
+                self.assertEqual(sent[-3].tool_calls[0]['id'], tool.tool_call_id)
+                self.assertEqual(sent[-3].tool_calls[0]['args'], {'product_id':101})
+                self.assertEqual([m.content for m in sent if isinstance(m,HumanMessage)], [query.content, '仅回答本轮问题，不补答历史未完成或已取消的任务：\n' + query.content])
                 self.assertNotIn(detail.description, sent[0].content)
                 self.assertEqual(result['candidate_products'], [{'product_id':101,'name':detail.name}])
                 resolve.assert_awaited_once_with('101', [])

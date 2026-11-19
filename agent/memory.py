@@ -89,6 +89,9 @@ class MemoryManager:
                     for index, item in enumerate(state["candidate_products"], 1)]
         elif purpose == "extract":
             task = {key: task[key] for key in ("intent", "filters", "color_choices", "color_confirmation") if key in task}
+            task["candidate_products"] = state.get("candidate_products", [])
+        if purpose in ("route", "extract") and state.get("comparison_products"):
+            task["comparison_products"] = state["comparison_products"]
         if task and (purpose in ("route", "extract") or task.get("intent") == state.get("intent")):
             result.append(HumanMessage(content="【结构化业务状态，仅作参考】\n" + json.dumps(task, ensure_ascii=False, separators=(",", ":"))))
         logger.info("context_budget purpose=%s original_messages=%d selected_messages=%d selected_chars=%d summary_chars=%d",

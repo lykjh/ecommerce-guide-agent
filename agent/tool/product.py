@@ -3,7 +3,7 @@ import re
 from agent.budget import invoke_query
 from agent.tool import mall
 from agent.tool.schemas import (
-    CandidateRef, DiscoveryRequest, FilterParams, MallError, ProductListRequest,
+    CandidateRef, DiscoveryPage, DiscoveryRequest, FilterParams, MallError, ProductListRequest,
     ProductMatch, ProductResolution, ProductSelection,
 )
 from agent.utils.log_tool import get_loger
@@ -13,22 +13,27 @@ logger = get_loger("agent.tool.product")
 
 async def find_products(
     request: DiscoveryRequest | ProductListRequest, filters: FilterParams,
+    *, product_ids: list[int] | None = None,
 ) -> ProductSelection:
     """查询一页候选，并用详情核实最多三个商品的 SKU。"""
-    query = mall.search_products if isinstance(request, DiscoveryRequest) else mall.list_products
-    page = await invoke_query(query, request)
+    if product_ids is None:
+        query = mall.search_products if isinstance(request, DiscoveryRequest) else mall.list_products
+        page = await invoke_query(query, request)
+        product_ids = [card.id for card in page.items]
+    else:
+        page = DiscoveryPage(items=[], hasMore=False, nextCursor=None)
     matches = []
     checked = []
-    unverified = [card.id for card in page.items[3:]]
+    unverified = product_ids[3:]
     alternative_colors = []
-    for card in page.items[:3]:
-        detail = await invoke_query(mall.get_product, card.id)
-        checked.append(card.id)
+    for product_id in product_ids[:3]:
+        detail = await invoke_query(mall.get_product, product_id)
+        checked.append(product_id)
         color_values = {}
         if filters.color is not None:
             color_options = [option for option in detail.options if option.name == "颜色"]
             if len(color_options) != 1:
-                unverified.append(card.id)
+                unverified.append(product_id)
                 continue
             color_values = {value.id: value.value for value in color_options[0].values}
         selected = []
@@ -51,7 +56,7 @@ async def find_products(
                     continue
             selected.append(sku)
         if unknown_color:
-            unverified.append(card.id)
+            unverified.append(product_id)
         if selected:
             # 回答证据只保留匹配 SKU，避免模型借用同商品另一颜色的价格。
             matches.append(ProductMatch(product=detail.model_copy(update={"skus": selected}), skus=selected))

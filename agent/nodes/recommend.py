@@ -95,6 +95,8 @@ async def product_search_node(state: AgentState, intent: str):
                 if isinstance(exc, ValidationError) else [])
             logger.warning("filter_extract_failed error_type=%s fields=%s", type(exc).__name__, fields)
             reply = "筛选条件解析失败，请重试本次请求。"
+            if isinstance(exc, ValidationError) and any("最低价格不能超过最高价格" in error["msg"] for error in exc.errors()):
+                reply = "最低价格不能超过最高价格，请重新确认价格上下限。"
             return {"messages": [AIMessage(content=reply)], "final_reply": reply}
 
     filters = params.model_dump(mode="json", exclude={"next_page"})
@@ -102,7 +104,17 @@ async def product_search_node(state: AgentState, intent: str):
         value = getattr(params, name)
         if value is not None:
             filters[name] = format(value.normalize(), "f")
+            # 商城游标区分金额文本；首查与 checkpoint 恢复后的请求必须一致。
+            setattr(params, name, Decimal(filters[name]))
     task = {"intent": intent, "filters": filters}
+    scope_products = None
+    if params.scope != "catalog":
+        scope_products = (state.get("comparison_products", []) if params.scope == "comparison"
+                          else previous_task.get("scope_products", state.get("candidate_products", [])))
+        if not scope_products:
+            reply = "尚未确认要保留的商品范围，请先指定商品或重新查询；本轮未扩大到全商城搜索。"
+            return {"messages": [AIMessage(content=reply)], "final_reply": reply}
+        task["scope_products"] = scope_products
     previous_filters = previous_task.get("filters", {})
     if params.category == previous_filters.get("category") and params.color is not None:
         if params.color in previous_task.get("color_choices", []):
@@ -125,7 +137,10 @@ async def product_search_node(state: AgentState, intent: str):
         reply += "。本轮未查询符合这些要求的商品；可指定商品咨询规格，或明确取消这些筛选条件。"
     else:
         try:
-            category, reply = await navigate_categories(category, params.category, action)
+            if scope_products is not None:
+                category = {"mode": "selection", "selected": None, "pending": False}
+            else:
+                category, reply = await navigate_categories(category, params.category, action)
         except MallError:
             reply = CATEGORY_QUERY_FAILED
         update["category_context"] = category
@@ -150,9 +165,17 @@ async def product_search_node(state: AgentState, intent: str):
                     request = ProductListRequest(categoryId=category_id, minPrice=params.min_price,
                         maxPrice=params.max_price, afterId=cursor)
                 try:
-                    selection = await find_products(request, params)
+                    if scope_products is None:
+                        selection = await find_products(request, params)
+                    else:
+                        selection = await find_products(request, params,
+                            product_ids=[item["product_id"] for item in scope_products])
                 except MallError as exc:
                     reply = mall_error_reply(exc.kind, exc.http_status, exc.code)
+                    if mode == "search" and cursor is not None and (
+                            exc.http_status in (400, 410) or exc.code in (400, 410)):
+                        update["product_page"] = {}
+                        reply = "本次无法继续商品搜索翻页，请重新查询；回复‘下一批’将按原条件从第一页重新开始。"
                     return {**update, "messages": [AIMessage(content=reply)], "final_reply": reply}
                 candidates, lines = [], []
                 for match in selection.matches:
@@ -165,6 +188,8 @@ async def product_search_node(state: AgentState, intent: str):
                 reply = (f"本批核实到 {len(lines)} 款符合已核实条件的商品：\n" + "\n".join(lines)) if lines else "本批核实的候选中没有找到符合条件的商品。"
                 if mode == "search":
                     reply = "本次按关键词搜索" + ("，并限定在已选分类范围内。\n" if selected else "，未确认精确分类。\n") + reply
+                elif mode == "selection":
+                    reply = "本次仅在原商品范围内筛选。\n" + reply
                 if selection.unverified_product_ids:
                     reply += "\n部分候选尚未核实，或缺少可确认的规格资料，不能认定符合条件。"
                 if params.color is not None and selection.alternative_colors and not lines:
