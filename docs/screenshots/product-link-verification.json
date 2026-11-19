@@ -1,0 +1,21 @@
+{
+  "date": "2026-11-19",
+  "browser": "Codex IAB",
+  "sourceUrl": "http://127.0.0.1:5173/mall",
+  "linkHref": "http://127.0.0.1:5173/product/9200603",
+  "destinationUrl": "http://127.0.0.1:5173/product/9200603",
+  "productId": "9200603",
+  "name": "麦禾 海鲜家庭组合（演示）",
+  "price": "89.90",
+  "actualLinkClick": true,
+  "openedNewTab": true,
+  "originalChatPreserved": true,
+  "agent_commit": "7b65d9438e15eb1bc7b03a0c5ed09b83eecc6dd9",
+  "backend_sha256": "FD6885FF74ABA0F9B812D133DC65DB65F28403C963B4F48C790EDBD4E2E7BA3F",
+  "model_calls": 3,
+  "input_tokens": 3276,
+  "output_tokens": 142,
+  "total_tokens": 3418,
+  "unknown_usage": 0,
+  "gif_sha256": "cf051b185be20957f9bb3aac8674a3812ca6d6b11d038c3347e3638896d67add"
+}
